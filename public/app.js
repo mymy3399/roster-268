@@ -1,0 +1,1052 @@
+import {
+  escapeHtml,
+  escapeVCard,
+  renderSafeHtml,
+  safePhotoUrl,
+  safeTelephone
+} from './js/security.js';
+
+function getPhotoSrc(t) {
+  if (!t) return '';
+  if (t.startsWith('/')) {
+    if (t.startsWith('/photos/')
+      || t.startsWith('/photos-ai/')
+      || t.startsWith('/data/photo/')) {
+      const separator = t.includes('?') ? '&' : '?';
+      return safePhotoUrl(`${t}${separator}v=20260725-ai-blur`);
+    }
+    return safePhotoUrl(t);
+  }
+  const dataUrl = t.startsWith('data:image/') ? t : `data:image/jpeg;base64,${t}`;
+  return safePhotoUrl(dataUrl);
+}
+
+function getPersonPhotoSrc(p, thumbnail = false) {
+  const photo = p && p.t ? String(p.t) : '';
+  const isCustomPhoto = photo.startsWith('data:image/')
+    || photo.startsWith('/photos/edited_')
+    || photo.startsWith('/photos/person_');
+  if (isCustomPhoto) {
+    return getPhotoSrc(photo);
+  }
+
+  const no = Number(p && p.no);
+  if (Number.isInteger(no) && no >= 1 && no <= 154) {
+    const paddedNo = String(no).padStart(3, '0');
+    return getPhotoSrc(thumbnail
+      ? `/photos/thumbs/${paddedNo}.webp`
+      : `/photos/${paddedNo}.png`);
+  }
+  return getPhotoSrc(photo);
+}
+
+function getNumberedPhotoSrc(p, thumbnail = false) {
+  const no = Number(p && p.no);
+  if (!Number.isInteger(no) || no < 1 || no > 154) return '';
+  const paddedNo = String(no).padStart(3, '0');
+  return getPhotoSrc(thumbnail
+    ? `/photos/thumbs/${paddedNo}.webp`
+    : `/photos/${paddedNo}.png`);
+}
+
+let PEOPLE_BASE = [];
+const EDITS_KEY = 'directory268_edits_v1';
+
+async function loadData() {
+  let res = await fetch('/api/people', { cache: 'no-store' });
+  if (!res.ok) {
+    res = await fetch('/data/people.json', { cache: 'no-store' });
+  }
+  if (!res.ok) throw new Error('โหลดรายชื่อไม่สำเร็จ');
+  const people = await res.json();
+  if (!Array.isArray(people)) throw new Error('รูปแบบข้อมูลไม่ถูกต้อง');
+  PEOPLE_BASE = people;
+  try {
+    const editsRes = await fetch('/api/edits', { cache: 'no-store' });
+    if (editsRes.ok) {
+      const serverEdits = await editsRes.json();
+      if (serverEdits && typeof serverEdits === 'object' && !Array.isArray(serverEdits)) {
+        // The server is canonical when reachable, including when it has zero edits.
+        localStorage.setItem(EDITS_KEY, JSON.stringify(serverEdits));
+      }
+    }
+  } catch(e) {}
+  return PEOPLE_BASE;
+}
+
+/* ---------- persistence ---------- */
+function getEdits(){
+  try{ return JSON.parse(localStorage.getItem(EDITS_KEY) || '{}'); }catch(e){ return {}; }
+}
+function setEdits(obj){
+  try{ localStorage.setItem(EDITS_KEY, JSON.stringify(obj)); }catch(e){ showToast('บันทึกไม่สำเร็จ (พื้นที่จัดเก็บเต็ม)'); }
+}
+
+function mergedPerson(no){
+  const base = PEOPLE_BASE.find(p => p.no === no);
+  const edits = getEdits();
+  return { ...base, ...(edits[no] || {}) };
+}
+function isEdited(no){
+  const edits = getEdits();
+  return !!edits[no] && Object.keys(edits[no]).length > 0;
+}
+function allMerged(){
+  return PEOPLE_BASE.map(p => mergedPerson(p.no));
+}
+
+/* ---------- dom refs ---------- */
+const $list = document.getElementById('list');
+const $search = document.getElementById('search');
+const $clear = document.getElementById('clearBtn');
+const $quickFilters = document.getElementById('quickFilters');
+const $empty = document.getElementById('empty');
+const $countLine = document.getElementById('countLine');
+const $loadingState = document.getElementById('loadingState');
+const $errorState = document.getElementById('errorState');
+const $connectionStatus = document.getElementById('connectionStatus');
+const $backdrop = document.getElementById('backdrop');
+const $sheet = document.getElementById('sheet');
+const $sheetBody = document.getElementById('sheetBody');
+const $toast = document.getElementById('toast');
+const $photoViewer = document.getElementById('photoViewer');
+const $photoViewerImage = document.getElementById('photoViewerImage');
+const $photoViewerClose = document.getElementById('photoViewerClose');
+const $photoInput = document.getElementById('photoInput');
+
+document.addEventListener('error', (event) => {
+  const image = event.target;
+  if (!(image instanceof HTMLImageElement) || !image.dataset.fallbackSrc) return;
+  const fallbackUrl = new URL(image.dataset.fallbackSrc, location.href).href;
+  if (image.src === fallbackUrl) return;
+  image.src = image.dataset.fallbackSrc;
+  if (image.dataset.fallbackFullSrc) image.dataset.fullSrc = image.dataset.fallbackFullSrc;
+}, true);
+
+function norm(s){ return (s||'').toLowerCase(); }
+
+function highlight(text, q){
+  const safe = escapeHtml(text);
+  if(!q) return safe;
+  try{
+    const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')', 'ig');
+    return safe.replace(re, '<mark>$1</mark>');
+  }catch(e){ return safe; }
+}
+
+function matches(p, q){
+  if(!q) return true;
+  const hay = norm([p.no, p.name, p.pos, p.committeeRole].join(' '));
+  return hay.includes(q);
+}
+
+function batchCategory(p){
+  const batch = norm(p && p.batch);
+  if(batch.includes('กอน')) return 'กอน';
+  if(batch.includes('กอส')) return 'กอส';
+  if(batch.includes('นรต')) return 'นรต';
+  return 'other';
+}
+
+let activeFilter = 'all';
+
+function formatPhone(p){
+  if(p && p.length === 10) return p.slice(0,3)+'-'+p.slice(3,6)+'-'+p.slice(6);
+  return p;
+}
+
+function cardHtml(p, q){
+  const edited = isEdited(p.no);
+  return `
+  <div class="card" data-no="${p.no}" role="button" tabindex="0" aria-label="เปิดข้อมูล ${escapeHtml(p.rank)} ${escapeHtml(p.name)} ลำดับที่ ${p.no}">
+    <div class="thumb-wrap">
+      <img class="thumb" src="${getPersonPhotoSrc(p, true)}" data-full-src="${getPersonPhotoSrc(p)}" data-fallback-src="${getNumberedPhotoSrc(p, true)}" data-fallback-full-src="${getNumberedPhotoSrc(p)}" alt="${escapeHtml(p.rank)}${escapeHtml(p.name)}" loading="lazy" decoding="async">
+      <span class="edited-dot ${edited ? 'show' : ''}"></span>
+    </div>
+    <div class="card-mid">
+      <div class="name-row">
+        <span class="rank">${highlight(p.rank, q)}</span>
+        <span class="name">${highlight(p.name, q)}</span>
+        ${p.nick && p.nick !== '-' ? `<span class="nick">"${highlight(p.nick, q)}"</span>` : ''}
+      </div>
+      <div class="pos">${highlight(p.pos, q)}</div>
+      ${p.committeeRole ? `<div class="committee-role">${highlight(p.committeeRole, q)}</div>` : ''}
+      <div class="tag-row">
+        <span class="tag">${highlight(p.unit, q)}</span>
+        <span class="tag">${highlight(p.batch, q)}</span>
+      </div>
+    </div>
+    <div class="card-side">
+      <span class="no-badge mono">#${p.no}</span>
+      <span class="phone mono">${highlight(formatPhone(p.phone), q)}</span>
+    </div>
+  </div>`;
+}
+
+function render(){
+  $loadingState.hidden = true;
+  $errorState.hidden = true;
+  const q = norm($search.value.trim());
+  $clear.classList.toggle('show', q.length > 0);
+  const all = allMerged();
+  document.getElementById('countBadge').textContent = `${all.length} นาย`;
+  const categoryCounts = { all: all.length, 'กอน': 0, 'กอส': 0, 'นรต': 0, other: 0, 'additional-role': 0 };
+  all.forEach(p => {
+    categoryCounts[batchCategory(p)]++;
+    if(String(p.committeeRole || '').trim()) categoryCounts['additional-role']++;
+  });
+  $quickFilters.querySelectorAll('.filter-chip').forEach(button => {
+    const selected = button.dataset.filter === activeFilter;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+    button.querySelector('.filter-count').textContent = categoryCounts[button.dataset.filter] || 0;
+  });
+  const filtered = all.filter(p =>
+    matches(p, q) && (
+      activeFilter === 'all' ||
+      (activeFilter === 'additional-role'
+        ? Boolean(String(p.committeeRole || '').trim())
+        : batchCategory(p) === activeFilter)
+    )
+  );
+  if(filtered.length === 0){
+    $list.replaceChildren();
+    $empty.style.display = 'flex';
+    $countLine.textContent = '';
+  }else{
+    $empty.style.display = 'none';
+    const filteredView = q || activeFilter !== 'all';
+    renderSafeHtml($countLine, filteredView
+      ? `<div class="filter-summary"><span>พบ ${filtered.length} รายชื่อ</span><button class="reset-filters" id="resultResetBtn" type="button">ล้างตัวกรอง</button></div>`
+      : `รายชื่อทั้งหมด ${filtered.length} นาย`);
+    renderSafeHtml($list, filtered.map(p => cardHtml(p, q)).join(''));
+  }
+}
+
+$search.addEventListener('input', render);
+$clear.addEventListener('click', () => { $search.value=''; render(); $search.focus(); });
+function resetDiscovery(){
+  $search.value = '';
+  activeFilter = 'all';
+  render();
+  $search.focus();
+}
+document.getElementById('emptyResetBtn').addEventListener('click', resetDiscovery);
+$countLine.addEventListener('click', (event) => {
+  if(event.target.closest('#resultResetBtn')) resetDiscovery();
+});
+$quickFilters.addEventListener('click', (event) => {
+  const button = event.target.closest('.filter-chip');
+  if(!button) return;
+  activeFilter = button.dataset.filter;
+  render();
+  button.scrollIntoView({ behavior:'smooth', block:'nearest', inline:'center' });
+});
+
+$list.addEventListener('click', (e) => {
+  const photo = e.target.closest('.thumb');
+  if(photo){
+    openPhotoViewer(photo.dataset.fullSrc || photo.src, photo.alt);
+    return;
+  }
+  const card = e.target.closest('.card');
+  if(!card) return;
+  const no = parseInt(card.dataset.no, 10);
+  openPersonSheet(no);
+});
+$list.addEventListener('keydown', (event) => {
+  if(event.key !== 'Enter' && event.key !== ' ') return;
+  const card = event.target.closest('.card');
+  if(!card) return;
+  event.preventDefault();
+  openPersonSheet(parseInt(card.dataset.no, 10));
+});
+
+function updateConnectionStatus(){
+  const offline = !navigator.onLine;
+  $connectionStatus.classList.toggle('show', offline);
+  $connectionStatus.textContent = offline ? 'ออฟไลน์ · แสดงข้อมูลที่บันทึกไว้' : '';
+}
+window.addEventListener('online', () => {
+  updateConnectionStatus();
+  showToast('กลับมาออนไลน์แล้ว');
+});
+window.addEventListener('offline', () => {
+  updateConnectionStatus();
+  showToast('ออฟไลน์ · บางการทำงานอาจไม่พร้อมใช้งาน');
+});
+updateConnectionStatus();
+
+/* ---------- generic sheet open/close ---------- */
+let lastFocusedElement = null;
+function openSheetRaw(html){
+  if(!$sheet.classList.contains('show')) lastFocusedElement = document.activeElement;
+  renderSafeHtml($sheetBody, html);
+  $backdrop.classList.add('show');
+  $sheet.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  $sheet.scrollTop = 0;
+  requestAnimationFrame(() => {
+    const focusTarget = $sheetBody.querySelector('button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if(focusTarget) focusTarget.focus();
+  });
+}
+function closeSheet(){
+  $backdrop.classList.remove('show');
+  $sheet.classList.remove('show');
+  document.body.style.overflow = '';
+  if(lastFocusedElement && document.contains(lastFocusedElement)) lastFocusedElement.focus();
+  lastFocusedElement = null;
+}
+$backdrop.addEventListener('click', closeSheet);
+
+/* ---------- full-size photo viewer ---------- */
+function openPhotoViewer(src, alt = ''){
+  if(!src) return;
+  $photoViewerImage.src = src;
+  $photoViewerImage.alt = alt;
+  $photoViewer.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  $photoViewerClose.focus();
+}
+function closePhotoViewer(){
+  $photoViewer.classList.remove('show');
+  document.body.style.overflow = $sheet.classList.contains('show') ? 'hidden' : '';
+  setTimeout(() => {
+    if(!$photoViewer.classList.contains('show')) $photoViewerImage.src = '';
+  }, 200);
+}
+$photoViewerClose.addEventListener('click', closePhotoViewer);
+$photoViewer.addEventListener('click', (e) => {
+  if(e.target === $photoViewer) closePhotoViewer();
+});
+document.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape' && $photoViewer.classList.contains('show')){
+    closePhotoViewer();
+  }
+});
+
+/* ---------- person detail sheet ---------- */
+function openPersonSheet(no){
+  const p = mergedPerson(no);
+  const nickHtml = (p.nick && p.nick !== '-') ? `<div class="sheet-nick">ชื่อเล่น "${escapeHtml(p.nick)}"</div>` : '';
+  openSheetRaw(`
+    <div class="sheet-topbar">
+      <button class="icon-btn" id="editPersonBtn" aria-label="แก้ไขข้อมูล">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
+      <button class="icon-btn" id="closeSheetBtn" aria-label="ปิด">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-head">
+      <img class="sheet-photo" src="${getPersonPhotoSrc(p, true)}" data-full-src="${getPersonPhotoSrc(p)}" data-fallback-src="${getNumberedPhotoSrc(p, true)}" data-fallback-full-src="${getNumberedPhotoSrc(p)}" alt="${escapeHtml(p.rank)}${escapeHtml(p.name)}" decoding="async">
+      <div>
+        <span class="sheet-id">ลำดับที่ <span class="mono">${p.no}</span></span>
+        <div class="sheet-name">${escapeHtml(p.rank)} ${escapeHtml(p.name)}</div>
+        ${nickHtml}
+      </div>
+    </div>
+    <div class="detail-rows">
+      <div class="drow"><div class="k">ตำแหน่ง</div><div class="v">${escapeHtml(p.pos)}</div></div>
+      ${p.committeeRole ? `<div class="drow"><div class="k">หน้าที่เพิ่มเติม</div><div class="v" style="white-space:pre-line">${escapeHtml(p.committeeRole)}</div></div>` : ''}
+      <div class="drow"><div class="k">หน่วย</div><div class="v">${escapeHtml(p.unit)}</div></div>
+      <div class="drow"><div class="k">รุ่นอบรม</div><div class="v">${escapeHtml(p.batch)}</div></div>
+      <div class="drow"><div class="k">วันเกิด</div><div class="v">${escapeHtml(p.birth)}</div></div>
+      <div class="drow"><div class="k">อายุ</div><div class="v">${escapeHtml(p.age)} ปี</div></div>
+      <div class="drow"><div class="k">เบอร์โทร</div><div class="v phone-v">${escapeHtml(formatPhone(p.phone))}</div></div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="callPersonBtn" type="button">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        โทรออก
+      </button>
+      <button class="btn btn-ghost" id="saveContactBtn">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        บันทึกรายชื่อ
+      </button>
+    </div>
+  `);
+  $sheetBody.querySelector('.sheet-photo').addEventListener('click', (e) => {
+    openPhotoViewer(e.currentTarget.dataset.fullSrc || e.currentTarget.src, e.currentTarget.alt);
+  });
+  document.getElementById('callPersonBtn').addEventListener('click', () => {
+    const telephone = safeTelephone(p.phone);
+    if(!telephone){
+      showToast('หมายเลขโทรศัพท์ไม่ถูกต้อง');
+      return;
+    }
+    if(confirm(`โทรหา ${p.rank}${p.name}\n${formatPhone(telephone)} ใช่หรือไม่?`)){
+      window.location.href = `tel:${telephone}`;
+    }
+  });
+  document.getElementById('saveContactBtn').addEventListener('click', () => {
+    if(confirm(`บันทึก ${p.rank}${p.name} ลงในรายชื่อผู้ติดต่อใช่หรือไม่?`)){
+      saveContact(p);
+    }
+  });
+  document.getElementById('closeSheetBtn').addEventListener('click', closeSheet);
+  document.getElementById('editPersonBtn').addEventListener('click', () => openEditSheet(no));
+}
+
+/* ---------- edit form sheet ---------- */
+let editingNo = null;
+let editingPhotoB64 = null;
+let editingVersion = null;
+
+async function openEditSheet(no){
+  editingNo = no;
+  editingPhotoB64 = null;
+  editingVersion = null;
+  openSheetRaw(`
+    <div class="state-panel">
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="state-title">กำลังโหลดข้อมูลล่าสุด</div>
+    </div>
+  `);
+
+  try {
+    const latestRes = await fetch(`/api/edits/${no}`, { cache: 'no-store' });
+    if(!latestRes.ok) throw new Error('latest edit unavailable');
+    const latest = await latestRes.json();
+    editingVersion = latest.version;
+    const edits = getEdits();
+    if(latest.data && Object.keys(latest.data).length > 0) edits[no] = latest.data;
+    else delete edits[no];
+    setEdits(edits);
+  } catch(e) {
+    // Offline fallback: allow a local edit, but do not overwrite the server.
+    editingVersion = null;
+  }
+
+  const p = mergedPerson(no);
+  const edited = isEdited(no);
+  openSheetRaw(`
+    <div class="sheet-topbar">
+      <button class="icon-btn" id="closeSheetBtn" aria-label="ปิด">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="edit-photo-row">
+      <button class="edit-photo-btn" id="editPhotoBtn" type="button" aria-label="เปลี่ยนรูปประจำตัว">
+        <img id="editPhotoPreview" src="${getPersonPhotoSrc(p)}" alt="${escapeHtml(p.rank)}${escapeHtml(p.name)}">
+        <span class="edit-photo-overlay">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        </span>
+      </button>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>ยศ</label><input id="f_rank" value="${escapeHtml(p.rank)}"></div>
+      <div class="field"><label>ชื่อเล่น</label><input id="f_nick" value="${escapeHtml(p.nick)}"></div>
+    </div>
+    <div class="field">
+      <label for="f_name">ชื่อ-สกุล *</label>
+      <input id="f_name" value="${escapeHtml(p.name)}" required aria-describedby="f_name_error">
+      <div class="field-error" id="f_name_error" role="alert"></div>
+    </div>
+    <div class="field"><label>ตำแหน่ง</label><input id="f_pos" value="${escapeHtml(p.pos)}"></div>
+    <div class="field"><label>หน้าที่เพิ่มเติม</label><textarea id="f_committeeRole" rows="3">${escapeHtml(p.committeeRole || '')}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>หน่วย</label><input id="f_unit" value="${escapeHtml(p.unit)}"></div>
+      <div class="field"><label>รุ่นอบรม</label><input id="f_batch" value="${escapeHtml(p.batch)}"></div>
+    </div>
+    <div class="field">
+      <label for="f_phone">เบอร์โทร</label>
+      <input id="f_phone" value="${escapeHtml(p.phone)}" inputmode="tel" autocomplete="tel" aria-describedby="f_phone_error">
+      <div class="field-error" id="f_phone_error" role="alert"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>วันเกิด</label><input id="f_birth" value="${escapeHtml(p.birth)}"></div>
+      <div class="field"><label>อายุ</label><input id="f_age" value="${escapeHtml(p.age)}" inputmode="numeric"></div>
+    </div>
+    <div class="form-note">ตรวจสอบข้อมูลก่อนส่ง คำขอจะมีผลเมื่อผู้ดูแลอนุมัติแล้ว</div>
+    ${edited ? `<button class="revert-link" id="revertBtn">คืนค่าเดิม (ยกเลิกการแก้ไขทั้งหมดของคนนี้)</button>` : ''}
+    <div class="actions">
+      <button class="btn btn-ghost" id="cancelEditBtn">ยกเลิก</button>
+      <button class="btn btn-primary" id="saveEditBtn">ส่งคำขอแก้ไข</button>
+    </div>
+  `);
+  document.getElementById('closeSheetBtn').addEventListener('click', closeSheet);
+  document.getElementById('cancelEditBtn').addEventListener('click', () => openPersonSheet(no));
+  document.getElementById('saveEditBtn').addEventListener('click', () => submitEdit(no));
+  document.getElementById('editPhotoBtn').addEventListener('click', () => $photoInput.click());
+  const revertBtn = document.getElementById('revertBtn');
+  if(revertBtn) revertBtn.addEventListener('click', async () => {
+    if(!confirm('คืนข้อมูลและรูปของบุคคลนี้กลับเป็นค่าต้นฉบับใช่หรือไม่?')) return;
+    if(editingVersion === null){
+      showToast('ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อส่งคำขอ');
+      return;
+    }
+    let res;
+    try {
+      res = await fetch(`/api/edit-requests/${no}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: {}, expectedVersion: editingVersion })
+      });
+    } catch(e) {
+      showToast('คืนค่าไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต');
+      return;
+    }
+    if(res.status === 409){
+      alert('ข้อมูลถูกแก้ไขจากอีกเครื่องแล้ว กรุณาตรวจสอบข้อมูลล่าสุดอีกครั้ง');
+      openEditSheet(no);
+      return;
+    }
+    if(!res.ok){
+      showToast('คืนค่าไม่สำเร็จ กรุณาลองใหม่');
+      return;
+    }
+    showToast('ส่งคำขอคืนค่าแล้ว รอผู้ดูแลอนุมัติ');
+    await refreshPendingCount();
+    openPersonSheet(no);
+  });
+}
+
+$photoInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  if(!file.type.startsWith('image/')){
+    showToast('กรุณาเลือกไฟล์รูปภาพ');
+    $photoInput.value = '';
+    return;
+  }
+  if(file.size > 10 * 1024 * 1024){
+    showToast('รูปมีขนาดเกิน 10 MB');
+    $photoInput.value = '';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX_EDGE = 1600;
+      const MAX_IMAGE_BYTES = 500 * 1024;
+      let scale = Math.min(1, MAX_EDGE / img.width, MAX_EDGE / img.height);
+      let quality = 0.86;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      let dataUrl = '';
+
+      for(let attempt = 0; attempt < 20; attempt += 1){
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, canvas.width, canvas.height);
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+        const encoded = dataUrl.slice(dataUrl.indexOf(',') + 1);
+        const decodedBytes = Math.floor(encoded.length * 3 / 4);
+        if(decodedBytes <= MAX_IMAGE_BYTES) break;
+        if(quality > 0.54) quality -= 0.08;
+        else {
+          scale *= 0.82;
+          quality = 0.78;
+        }
+      }
+
+      const encoded = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      if(Math.floor(encoded.length * 3 / 4) > MAX_IMAGE_BYTES){
+        showToast('รูปมีรายละเอียดสูงเกินไป กรุณาเลือกรูปอื่น');
+        return;
+      }
+      editingPhotoB64 = dataUrl;
+      document.getElementById('editPhotoPreview').src = dataUrl;
+    };
+    img.onerror = () => showToast('ไม่สามารถเปิดไฟล์รูปนี้ได้');
+    img.src = ev.target.result;
+  };
+  reader.onerror = () => showToast('ไม่สามารถอ่านไฟล์รูปนี้ได้');
+  reader.readAsDataURL(file);
+  $photoInput.value = '';
+});
+
+async function submitEdit(no){
+  const nameInput = document.getElementById('f_name');
+  const phoneInput = document.getElementById('f_phone');
+  const nameError = document.getElementById('f_name_error');
+  const phoneError = document.getElementById('f_phone_error');
+  const normalizedPhone = phoneInput.value.replace(/[\s-]/g, '');
+  nameError.textContent = '';
+  phoneError.textContent = '';
+  nameInput.removeAttribute('aria-invalid');
+  phoneInput.removeAttribute('aria-invalid');
+  if(!nameInput.value.trim()){
+    nameInput.setAttribute('aria-invalid', 'true');
+    nameError.textContent = 'กรุณากรอกชื่อ-สกุล';
+    nameInput.focus();
+    return;
+  }
+  if(normalizedPhone && !/^\d{9,10}$/.test(normalizedPhone)){
+    phoneInput.setAttribute('aria-invalid', 'true');
+    phoneError.textContent = 'กรอกตัวเลข 9–10 หลัก';
+    phoneInput.focus();
+    return;
+  }
+  const patch = {
+    rank: document.getElementById('f_rank').value.trim(),
+    name: document.getElementById('f_name').value.trim(),
+    nick: document.getElementById('f_nick').value.trim(),
+    pos: document.getElementById('f_pos').value.trim(),
+    committeeRole: document.getElementById('f_committeeRole').value.trim(),
+    unit: document.getElementById('f_unit').value.trim(),
+    batch: document.getElementById('f_batch').value.trim(),
+    phone: normalizedPhone,
+    birth: document.getElementById('f_birth').value.trim(),
+    age: document.getElementById('f_age').value.trim(),
+  };
+  const currentEdit = getEdits()[no] || {};
+  if(editingPhotoB64) patch.t = editingPhotoB64;
+  else if(currentEdit.t) patch.t = currentEdit.t;
+
+  // only store fields that actually differ from the original baked-in data
+  const base = PEOPLE_BASE.find(x => x.no === no);
+  const diff = {};
+  for(const k in patch){
+    if(patch[k] !== String(base[k] ?? '')) diff[k] = patch[k];
+  }
+  if(editingVersion === null){
+    showToast('ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อส่งคำขอแก้ไข');
+    return;
+  }
+
+  const saveButton = document.getElementById('saveEditBtn');
+  saveButton.disabled = true;
+  saveButton.textContent = 'กำลังบันทึก…';
+  try {
+    const res = await fetch(`/api/edit-requests/${no}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: diff, expectedVersion: editingVersion })
+    });
+    if(res.status === 409){
+      alert('ข้อมูลนี้ถูกแก้ไขจากอีกเครื่องแล้ว ระบบจะโหลดข้อมูลล่าสุด กรุณาตรวจสอบและแก้ไขอีกครั้ง');
+      openEditSheet(no);
+      return;
+    }
+    if(res.status === 429){
+      throw new Error('rate limited');
+    }
+    if(res.status === 503){
+      throw new Error('uploads busy');
+    }
+    if(res.status === 413 || res.status === 400){
+      throw new Error('invalid upload');
+    }
+    if(!res.ok) throw new Error('save failed');
+    showToast('ส่งคำขอแก้ไขแล้ว รอผู้ดูแลอนุมัติ');
+    await refreshPendingCount();
+    openPersonSheet(no);
+  } catch(e) {
+    saveButton.disabled = false;
+    saveButton.textContent = 'ส่งคำขอแก้ไข';
+    const messages = {
+      'rate limited': 'ส่งคำขอบ่อยเกินไป กรุณารอสักครู่',
+      'uploads busy': 'มีผู้กำลังอัปโหลดจำนวนมาก กรุณาลองใหม่อีกครั้ง',
+      'invalid upload': 'ข้อมูลหรือรูปไม่ถูกต้อง กรุณาเลือกรูปใหม่'
+    };
+    showToast(messages[e.message] || 'ส่งคำขอไม่สำเร็จ กรุณาลองใหม่');
+  }
+}
+
+/* ---------- toast / vcard ---------- */
+function showToast(msg){
+  $toast.textContent = msg;
+  $toast.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => $toast.classList.remove('show'), 2400);
+}
+
+function saveContact(p){
+  const fullName = escapeVCard(p.rank + p.name);
+  const nameParts = String(p.name || '').split(' ').reverse().map(escapeVCard);
+  const nick = escapeVCard(p.nick);
+  const vcard = [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    `N:${nameParts.join(';')};;;`,
+    `FN:${fullName}${nick && nick !== '-' ? ' ("' + nick + '")' : ''}`,
+    `TITLE:${escapeVCard(p.pos)}`,
+    `TEL;TYPE=CELL:${safeTelephone(p.phone)}`,
+    `NOTE:หลักสูตรสารวัตร รุ่นที่ 268 ลำดับที่ ${Number(p.no) || ''} · หน่วย ${escapeVCard(p.unit)} · ${escapeVCard(p.batch)} · เกิด ${escapeVCard(p.birth)}`,
+    'END:VCARD'
+  ].join('\r\n');
+  try{
+    const blob = new Blob([vcard], {type:'text/vcard'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const filename = String(p.name || 'contact').replace(/[^\p{L}\p{N}._-]+/gu, '_');
+    a.download = `${filename}.vcf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    showToast('บันทึกรายชื่อผู้ติดต่อแล้ว');
+  }catch(e){
+    showToast('ไม่สามารถบันทึกได้ในขณะนี้');
+  }
+}
+
+/* ---------- admin approval queue ---------- */
+const approvalFieldLabels = {
+  rank:'ยศ', name:'ชื่อ-นามสกุล', nick:'ชื่อเล่น', pos:'ตำแหน่ง',
+  committeeRole:'หน้าที่เพิ่มเติม', unit:'หน่วย', batch:'รุ่นอบรม',
+  phone:'เบอร์โทร', birth:'วันเกิด', age:'อายุ', t:'รูปถ่าย'
+};
+const $adminMenuBtn = document.getElementById('adminMenuBtn');
+const $adminPendingBadge = document.getElementById('adminPendingBadge');
+
+function setPendingCount(count){
+  const total = Math.max(0, Number(count) || 0);
+  $adminPendingBadge.textContent = total > 99 ? '99+' : String(total);
+  $adminPendingBadge.classList.toggle('show', total > 0);
+  const label = total > 0 ? `เมนูผู้ดูแล มีคำขอรออนุมัติ ${total} รายการ` : 'เมนูผู้ดูแล ไม่มีคำขอรออนุมัติ';
+  $adminMenuBtn.setAttribute('aria-label', label);
+  $adminMenuBtn.title = label;
+}
+
+async function refreshPendingCount(){
+  try{
+    const res = await fetch('/api/edit-requests/pending-count', { cache:'no-store' });
+    if(!res.ok) return;
+    const result = await res.json();
+    setPendingCount(result.count);
+  }catch(e){}
+}
+
+async function ensureAdminLogin(){
+  try{
+    const session = await fetch('/api/admin/session', { cache:'no-store' }).then(r => r.json());
+    if(session.admin) return true;
+  }catch(e){}
+  return new Promise((resolve) => {
+    openSheetRaw(`
+      <div class="sheet-topbar">
+        <button class="icon-btn" id="closeAdminLoginBtn" aria-label="ปิด">×</button>
+      </div>
+      <form class="admin-login" id="adminLoginForm">
+        <div class="admin-login-icon">
+          <svg width="31" height="31" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l7 3v5c0 4.6-2.9 8.2-7 10-4.1-1.8-7-5.4-7-10V6l7-3z"/>
+            <path d="M9 11V9a3 3 0 0 1 6 0v2"/><rect x="8" y="11" width="8" height="6" rx="1.5"/>
+          </svg>
+        </div>
+        <h2>เข้าสู่ระบบผู้ดูแล</h2>
+        <div class="admin-login-subtitle">กรอก PIN เพื่อดูและอนุมัติคำขอแก้ไขข้อมูล</div>
+        <label class="admin-pin-label" for="adminPinInput">PIN ผู้ดูแล</label>
+        <input class="admin-pin-input" id="adminPinInput" type="password" inputmode="numeric"
+          pattern="[0-9]*" maxlength="5" autocomplete="one-time-code" aria-describedby="adminLoginError">
+        <div class="admin-login-error" id="adminLoginError" role="alert"></div>
+        <div class="admin-login-actions">
+          <button class="admin-cancel-btn" id="cancelAdminLoginBtn" type="button">ยกเลิก</button>
+          <button class="admin-submit-btn" id="submitAdminLoginBtn" type="submit">เข้าสู่ระบบ</button>
+        </div>
+      </form>
+    `);
+    const form = document.getElementById('adminLoginForm');
+    const input = document.getElementById('adminPinInput');
+    const error = document.getElementById('adminLoginError');
+    const submit = document.getElementById('submitAdminLoginBtn');
+    let completed = false;
+    const finish = (value) => {
+      if(completed) return;
+      completed = true;
+      closeSheet();
+      resolve(value);
+    };
+    document.getElementById('closeAdminLoginBtn').addEventListener('click', () => finish(false));
+    document.getElementById('cancelAdminLoginBtn').addEventListener('click', () => finish(false));
+    $backdrop.addEventListener('click', () => finish(false), { once:true });
+    input.addEventListener('input', () => {
+      input.value = input.value.replace(/\D/g, '').slice(0, 5);
+      error.textContent = '';
+    });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if(input.value.length !== 5){
+        error.textContent = 'กรุณากรอก PIN 5 หลัก';
+        input.focus();
+        return;
+      }
+      submit.disabled = true;
+      submit.textContent = 'กำลังตรวจสอบ…';
+      try{
+        const res = await fetch('/api/admin/login', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ pin:input.value })
+        });
+        if(res.ok) return finish(true);
+        error.textContent = res.status === 429
+          ? 'ลอง PIN เกินจำนวนที่กำหนด กรุณารอ 15 นาที'
+          : 'PIN ไม่ถูกต้อง กรุณาลองใหม่';
+      }catch(e){
+        error.textContent = 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่';
+      }
+      submit.disabled = false;
+      submit.textContent = 'เข้าสู่ระบบ';
+      form.classList.remove('shake');
+      void form.offsetWidth;
+      form.classList.add('shake');
+      input.select();
+    });
+    setTimeout(() => input.focus(), 250);
+  });
+}
+
+async function openAdminMenu(){
+  if(!await ensureAdminLogin()) return;
+  openSheetRaw(`
+    <div class="state-panel">
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="state-title">กำลังโหลดคำขอแก้ไข</div>
+    </div>
+  `);
+  try{
+    const [res, historyRes] = await Promise.all([
+      fetch('/api/admin/edit-requests', { cache:'no-store' }),
+      fetch('/api/admin/edit-history', { cache:'no-store' })
+    ]);
+    if(res.status === 401 || historyRes.status === 401){
+      closeSheet();
+      return openAdminMenu();
+    }
+    if(!res.ok || !historyRes.ok) throw new Error('load queue failed');
+    const requests = await res.json();
+    const history = await historyRes.json();
+    setPendingCount(requests.length);
+    const cards = requests.map(request => {
+      const changes = Object.entries(request.data).map(([key,value]) => `
+        <div class="approval-change">
+          <div class="k">${escapeHtml(approvalFieldLabels[key] || key)}</div>
+          <div class="v">${key === 't' ? 'มีรูปถ่ายใหม่' : escapeHtml(value || '—')}</div>
+        </div>
+      `).join('') || '<div class="approval-change"><div class="v">ขอคืนค่าเป็นข้อมูลต้นฉบับ</div></div>';
+      return `
+        <div class="approval-card" data-request-id="${request.id}">
+          <div class="approval-title">#${request.no} ${escapeHtml(request.rank || '')}${escapeHtml(request.name || '')}</div>
+          <div class="approval-time">${new Date(request.created_at).toLocaleString('th-TH')}</div>
+          ${changes}
+          <div class="approval-actions">
+            <button class="approve-btn" type="button">อนุมัติ</button>
+            <button class="reject-btn" type="button">ไม่อนุมัติ</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    const historyCards = history.map(request => {
+      const changes = Object.entries(request.data).map(([key,value]) => `
+        <div class="approval-change">
+          <div class="k">${escapeHtml(approvalFieldLabels[key] || key)}</div>
+          <div class="v">${key === 't' ? 'มีรูปถ่ายใหม่' : escapeHtml(value || '—')}</div>
+        </div>
+      `).join('') || '<div class="approval-change"><div class="v">คืนเป็นข้อมูลต้นฉบับ</div></div>';
+      const reverted = request.status === 'reverted';
+      return `
+        <div class="approval-card${reverted ? ' reverted' : ''}" data-request-id="${request.id}">
+          <div class="approval-title">#${request.no} ${escapeHtml(request.rank || '')}${escapeHtml(request.name || '')}</div>
+          <div class="approval-time">อนุมัติเมื่อ ${new Date(request.reviewed_at || request.created_at).toLocaleString('th-TH')}</div>
+          ${changes}
+          ${reverted
+            ? '<span class="approval-status">คืนค่าเดิมแล้ว</span>'
+            : '<div class="approval-actions"><button class="revert-approved-btn" type="button">คืนค่าเดิม</button></div>'}
+        </div>
+      `;
+    }).join('');
+    openSheetRaw(`
+      <div class="sheet-topbar">
+        <button class="icon-btn" id="adminLogoutBtn" aria-label="ออกจากระบบผู้ดูแล" title="ออกจากระบบ">↪</button>
+        <button class="icon-btn" id="closeSheetBtn" aria-label="ปิด">×</button>
+      </div>
+      <h2 style="font-size:18px;">อนุมัติการแก้ไข</h2>
+      <div style="font-size:13px;color:var(--muted);margin:3px 0 10px;">รออนุมัติ ${requests.length} รายการ</div>
+      <div class="approval-section-title">รายการรออนุมัติ</div>
+      <div id="approvalList">${cards || '<div class="state-panel"><div class="state-title">ไม่มีคำขอที่รออนุมัติ</div></div>'}</div>
+      <div class="approval-section-title">ประวัติการแก้ไข</div>
+      <div id="approvalHistory">${historyCards || '<div class="state-panel"><div class="state-title">ยังไม่มีประวัติการอนุมัติ</div></div>'}</div>
+    `);
+    document.getElementById('closeSheetBtn').addEventListener('click', closeSheet);
+    document.getElementById('adminLogoutBtn').addEventListener('click', async () => {
+      await fetch('/api/admin/logout', { method:'POST' });
+      closeSheet();
+      showToast('ออกจากระบบผู้ดูแลแล้ว');
+    });
+    document.getElementById('approvalList').addEventListener('click', async (event) => {
+      const card = event.target.closest('.approval-card');
+      if(!card) return;
+      const action = event.target.closest('.approve-btn') ? 'approve'
+        : event.target.closest('.reject-btn') ? 'reject' : null;
+      if(!action) return;
+      card.style.pointerEvents = 'none';
+      card.style.opacity = '.6';
+      const actionRes = await fetch(`/api/admin/edit-requests/${card.dataset.requestId}/${action}`, { method:'POST' });
+      if(actionRes.status === 409){
+        alert('ข้อมูลมีการเปลี่ยนแปลงหลังส่งคำขอ กรุณาไม่อนุมัติคำขอนี้และให้ผู้ใช้ส่งใหม่');
+      }else if(!actionRes.ok){
+        showToast('ดำเนินการไม่สำเร็จ');
+      }else{
+        showToast(action === 'approve' ? 'อนุมัติและอัปเดตข้อมูลแล้ว' : 'ไม่อนุมัติคำขอแล้ว');
+        await refreshPendingCount();
+        await loadData();
+        render();
+      }
+      openAdminMenu();
+    });
+    document.getElementById('approvalHistory').addEventListener('click', async (event) => {
+      const button = event.target.closest('.revert-approved-btn');
+      const card = event.target.closest('.approval-card');
+      if(!button || !card) return;
+      if(!confirm('คืนข้อมูลของบุคคลนี้กลับเป็นข้อมูลต้นฉบับทั้งหมดใช่หรือไม่?')) return;
+      card.style.pointerEvents = 'none';
+      card.style.opacity = '.6';
+      const actionRes = await fetch(`/api/admin/edit-requests/${card.dataset.requestId}/revert`, { method:'POST' });
+      if(!actionRes.ok){
+        showToast(actionRes.status === 404 ? 'รายการนี้ถูกคืนค่าไปแล้ว' : 'คืนค่าเดิมไม่สำเร็จ');
+      }else{
+        showToast('คืนข้อมูลเดิมเรียบร้อยแล้ว');
+        await Promise.all([refreshPendingCount(), loadData()]);
+        render();
+      }
+      openAdminMenu();
+    });
+  }catch(e){
+    renderSafeHtml($sheetBody, `
+      <div class="state-panel">
+        <div class="state-title">โหลดคำขอไม่สำเร็จ</div>
+        <button class="retry-btn" id="retryAdminBtn">ลองใหม่</button>
+      </div>`);
+    document.getElementById('retryAdminBtn').addEventListener('click', openAdminMenu);
+  }
+}
+$adminMenuBtn.addEventListener('click', openAdminMenu);
+
+/* ---------- install hint ---------- */
+(function(){
+  const $hint = document.getElementById('installHint');
+  const $hintClose = document.getElementById('hintClose');
+  const $hintText = document.getElementById('installHintText');
+  let deferredInstallPrompt = null;
+  let dismissed = false;
+  try{ dismissed = localStorage.getItem('installHintDismissed268') === '1'; }catch(e){}
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if(dismissed || isStandalone){ $hint.style.display = 'none'; }
+
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if(isIOS){
+    renderSafeHtml($hintText, '<b>ติดตั้งเป็นแอป:</b> แตะแถบนี้เพื่อดูวิธีติดตั้งบน iPhone');
+  }
+
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    $hint.style.display = 'flex';
+    renderSafeHtml($hintText, '<b>ติดตั้งเป็นแอป:</b> แตะแถบนี้เพื่อติดตั้งลงในโทรศัพท์');
+  });
+
+  async function installApp(){
+    if(isStandalone) return;
+    if(deferredInstallPrompt){
+      $hint.classList.add('installing');
+      deferredInstallPrompt.prompt();
+      const result = await deferredInstallPrompt.userChoice;
+      deferredInstallPrompt = null;
+      $hint.classList.remove('installing');
+      if(result.outcome === 'accepted'){
+        $hint.style.display = 'none';
+        showToast('ติดตั้งแอปเรียบร้อยแล้ว');
+      }
+      return;
+    }
+    if(isIOS){
+      alert('วิธีติดตั้งบน iPhone/iPad\n\n1. เปิดหน้านี้ด้วย Safari\n2. แตะปุ่มแชร์ (สี่เหลี่ยมมีลูกศรชี้ขึ้น)\n3. เลือก “เพิ่มไปยังหน้าจอโฮม”\n4. แตะ “เพิ่ม”');
+    }else{
+      alert('หากหน้าติดตั้งยังไม่แสดง ให้เปิดเมนูของเบราว์เซอร์ แล้วเลือก “ติดตั้งแอป” หรือ “เพิ่มไปยังหน้าจอหลัก”\n\nหมายเหตุ: เว็บไซต์ต้องเปิดผ่าน HTTPS จึงจะติดตั้งได้');
+    }
+  }
+
+  $hint.addEventListener('click', (event) => {
+    if(event.target.closest('#hintClose')) return;
+    installApp();
+  });
+  $hint.addEventListener('keydown', (event) => {
+    if(event.key === 'Enter' || event.key === ' '){
+      event.preventDefault();
+      installApp();
+    }
+  });
+  $hintClose.addEventListener('click', (event) => {
+    event.stopPropagation();
+    $hint.style.display = 'none';
+    try{ localStorage.setItem('installHintDismissed268', '1'); }catch(e){}
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    $hint.style.display = 'none';
+    showToast('ติดตั้งแอปเรียบร้อยแล้ว');
+  });
+})();
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load', async () => {
+    try{
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      const $updateBanner = document.getElementById('updateBanner');
+      const $updateAppBtn = document.getElementById('updateAppBtn');
+      let refreshing = false;
+
+      function offerUpdate(worker){
+        if(!worker) return;
+        $updateBanner.classList.add('show');
+        $updateAppBtn.disabled = true;
+        $updateAppBtn.textContent = 'กำลังอัปเดต…';
+        worker.postMessage({ type: 'SKIP_WAITING' });
+      }
+
+      if(registration.waiting && navigator.serviceWorker.controller){
+        offerUpdate(registration.waiting);
+      }
+      registration.addEventListener('updatefound', () => {
+        const worker = registration.installing;
+        worker.addEventListener('statechange', () => {
+          if(worker.state === 'installed' && navigator.serviceWorker.controller) offerUpdate(worker);
+        });
+      });
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if(refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+      setInterval(() => registration.update(), 60 * 60 * 1000);
+    }catch(error){
+      console.warn('Service Worker registration failed:', error);
+    }
+  });
+}
+
+async function startApp(){
+  $loadingState.hidden = false;
+  $errorState.hidden = true;
+  $list.replaceChildren();
+  $empty.style.display = 'none';
+  $countLine.textContent = '';
+  try{
+    await Promise.all([loadData(), refreshPendingCount()]);
+    render();
+    return true;
+  }catch(error){
+    console.error('Failed to load people data:', error);
+    $loadingState.hidden = true;
+    $errorState.hidden = false;
+    return false;
+  }
+}
+document.getElementById('retryLoadBtn').addEventListener('click', startApp);
+document.getElementById('refreshDataBtn').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.classList.add('refreshing');
+  button.setAttribute('aria-label', 'กำลังโหลดข้อมูลล่าสุด');
+  const success = await startApp();
+  button.classList.remove('refreshing');
+  button.setAttribute('aria-label', 'โหลดข้อมูลล่าสุด');
+  showToast(success ? 'โหลดข้อมูลล่าสุดแล้ว' : 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่');
+});
+startApp();

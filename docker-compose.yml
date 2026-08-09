@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    container_name: directory268_app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/usr/src/app/data
+      - ./public/photos:/usr/src/app/public/photos
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - ADMIN_PIN=${ADMIN_PIN:?Set ADMIN_PIN before starting Docker Compose}
+    restart: unless-stopped

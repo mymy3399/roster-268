@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "ทำเนียบหลักสูตรสารวัตร รุ่นที่ 268",
+  "short_name": "ทำเนียบ 268",
+  "description": "ค้นหารายชื่อและข้อมูลผู้เข้าอบรมหลักสูตรสารวัตร รุ่นที่ 268",
+  "lang": "th",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F5F1E7",
+  "theme_color": "#263449",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
