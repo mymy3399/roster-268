@@ -1,11 +1,45 @@
+# Environment files
 .env
 .env.*
 !.env.example
 
+# Node dependencies & logs
 node_modules/
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+logs/
+*.log
 
+# Database runtime & storage files
 data/database.sqlite*
-scripts/__pycache__/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
+# Python artifacts
+__pycache__/
+scripts/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Archives & export files
 directory268*.zip
+*.zip
+*.tar.gz
+*.tgz
+
+# Coverage and test output
+coverage/
+.nyc_output/
+
