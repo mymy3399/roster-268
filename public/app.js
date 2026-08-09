@@ -55,7 +55,7 @@ const EDITS_KEY = 'directory268_edits_v1';
 async function loadData() {
   let res = await fetch('/api/people', { cache: 'no-store' });
   if (!res.ok) {
-    res = await fetch('/data/people.json', { cache: 'no-store' });
+    res = await fetch('data/people.json', { cache: 'no-store' });
   }
   if (!res.ok) throw new Error('โหลดรายชื่อไม่สำเร็จ');
   const people = await res.json();
@@ -988,7 +988,7 @@ $adminMenuBtn.addEventListener('click', openAdminMenu);
 if('serviceWorker' in navigator){
   window.addEventListener('load', async () => {
     try{
-      const registration = await navigator.serviceWorker.register('/sw.js');
+      const registration = await navigator.serviceWorker.register('sw.js');
       const $updateBanner = document.getElementById('updateBanner');
       const $updateAppBtn = document.getElementById('updateAppBtn');
       let refreshing = false;

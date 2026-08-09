@@ -1,12 +1,12 @@
-const CACHE_NAME = 'directory268-v36';
+const CACHE_NAME = 'directory268-v37';
 const APP_SHELL = [
-  '/',
-  '/app.js',
-  '/js/security.js',
-  '/styles.css',
-  '/manifest.webmanifest',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png'
+  './',
+  'app.js',
+  'js/security.js',
+  'styles.css',
+  'manifest.webmanifest',
+  'icons/icon-192.png',
+  'icons/icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {

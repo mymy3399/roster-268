@@ -1,4 +1,4 @@
-const ALLOWED_PHOTO_PATHS = ['/photos/', '/data/photo/'];
+const ALLOWED_PHOTO_PATHS = ['/photos/', '/data/photo/', 'photos/'];
 const DATA_IMAGE_PATTERN = /^data:image\/(?:jpeg|png|webp);base64,[a-z0-9+/=\s]+$/i;
 const BLOCKED_ELEMENTS = new Set(['base', 'embed', 'iframe', 'link', 'meta', 'object', 'script', 'style']);
 const URL_ATTRIBUTES = new Set(['action', 'formaction', 'href', 'src', 'xlink:href']);
@@ -22,9 +22,9 @@ export function safePhotoUrl(value) {
   if (DATA_IMAGE_PATTERN.test(candidate)) return candidate;
 
   try {
-    const url = new URL(candidate, window.location.origin);
+    const url = new URL(candidate, window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
-    const hasAllowedPath = ALLOWED_PHOTO_PATHS.some((prefix) => url.pathname.startsWith(prefix));
+    const hasAllowedPath = ALLOWED_PHOTO_PATHS.some((prefix) => url.pathname.includes(prefix));
     return isSameOrigin && hasAllowedPath ? `${url.pathname}${url.search}` : '';
   } catch (error) {
     return '';
