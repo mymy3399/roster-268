@@ -277,8 +277,10 @@ window.addEventListener('offline', () => {
 });
 updateConnectionStatus();
 
-/* ---------- generic sheet open/close ---------- */
+/* ---------- generic sheet open/close & history state ---------- */
 let lastFocusedElement = null;
+let isModalHistoryPushed = false;
+
 function openSheetRaw(html){
   if(!$sheet.classList.contains('show')) lastFocusedElement = document.activeElement;
   renderSafeHtml($sheetBody, html);
@@ -286,17 +288,29 @@ function openSheetRaw(html){
   $sheet.classList.add('show');
   document.body.style.overflow = 'hidden';
   $sheet.scrollTop = 0;
+
+  if(!isModalHistoryPushed){
+    try{ history.pushState({ modalOpen: true }, ''); }catch(e){}
+    isModalHistoryPushed = true;
+  }
+
   requestAnimationFrame(() => {
     const focusTarget = $sheetBody.querySelector('button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
     if(focusTarget) focusTarget.focus();
   });
 }
+
 function closeSheet(){
   $backdrop.classList.remove('show');
   $sheet.classList.remove('show');
   document.body.style.overflow = '';
   if(lastFocusedElement && document.contains(lastFocusedElement)) lastFocusedElement.focus();
   lastFocusedElement = null;
+
+  if(isModalHistoryPushed && !$photoViewer.classList.contains('show')){
+    isModalHistoryPushed = false;
+    try{ if(history.state && history.state.modalOpen) history.back(); }catch(e){}
+  }
 }
 $backdrop.addEventListener('click', closeSheet);
 
@@ -307,15 +321,29 @@ function openPhotoViewer(src, alt = ''){
   $photoViewerImage.alt = alt;
   $photoViewer.classList.add('show');
   document.body.style.overflow = 'hidden';
+
+  if(!isModalHistoryPushed){
+    try{ history.pushState({ modalOpen: true }, ''); }catch(e){}
+    isModalHistoryPushed = true;
+  }
+
   $photoViewerClose.focus();
 }
+
 function closePhotoViewer(){
   $photoViewer.classList.remove('show');
   document.body.style.overflow = $sheet.classList.contains('show') ? 'hidden' : '';
+
+  if(isModalHistoryPushed && !$sheet.classList.contains('show')){
+    isModalHistoryPushed = false;
+    try{ if(history.state && history.state.modalOpen) history.back(); }catch(e){}
+  }
+
   setTimeout(() => {
     if(!$photoViewer.classList.contains('show')) $photoViewerImage.src = '';
   }, 200);
 }
+
 $photoViewerClose.addEventListener('click', closePhotoViewer);
 $photoViewer.addEventListener('click', (e) => {
   if(e.target === $photoViewer) closePhotoViewer();
@@ -324,6 +352,15 @@ document.addEventListener('keydown', (e) => {
   if(e.key === 'Escape' && $photoViewer.classList.contains('show')){
     closePhotoViewer();
   }
+});
+
+window.addEventListener('popstate', () => {
+  if($photoViewer.classList.contains('show')){
+    closePhotoViewer();
+  }else if($sheet.classList.contains('show')){
+    closeSheet();
+  }
+  isModalHistoryPushed = false;
 });
 
 /* ---------- person detail sheet ---------- */
@@ -361,9 +398,13 @@ function openPersonSheet(no){
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
         โทรออก
       </button>
-      <button class="btn btn-ghost" id="saveContactBtn">
+      <button class="btn btn-ghost" id="saveContactBtn" type="button">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
         บันทึกรายชื่อ
+      </button>
+      <button class="btn btn-ghost" id="sharePersonBtn" type="button">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        แชร์ข้อมูล
       </button>
     </div>
   `);
@@ -376,13 +417,30 @@ function openPersonSheet(no){
       showToast('หมายเลขโทรศัพท์ไม่ถูกต้อง');
       return;
     }
-    if(confirm(`โทรหา ${p.rank}${p.name}\n${formatPhone(telephone)} ใช่หรือไม่?`)){
-      window.location.href = `tel:${telephone}`;
-    }
+    const cleanTel = telephone.replace(/[^0-9+]/g, '');
+    window.location.href = `tel:${cleanTel}`;
   });
   document.getElementById('saveContactBtn').addEventListener('click', () => {
-    if(confirm(`บันทึก ${p.rank}${p.name} ลงในรายชื่อผู้ติดต่อใช่หรือไม่?`)){
-      saveContact(p);
+    saveContact(p);
+  });
+  document.getElementById('sharePersonBtn').addEventListener('click', async () => {
+    const nickStr = (p.nick && p.nick !== '-') ? ` ("${p.nick}")` : '';
+    const shareText = `ทำเนียบรุ่น 268: ลำดับที่ ${p.no} ${p.rank}${p.name}${nickStr}\nตำแหน่ง: ${p.pos}\nหน่วย: ${p.unit}\nเบอร์โทร: ${formatPhone(p.phone) || p.phone || '-'}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `ทำเนียบ 268 - ${p.rank}${p.name}`,
+          text: shareText,
+          url: window.location.href
+        });
+        showToast('แชร์ข้อมูลเรียบร้อยแล้ว');
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          copyToClipboardFallback(shareText, 'คัดลอกข้อมูลรายชื่อสำหรับแชร์แล้ว');
+        }
+      }
+    } else {
+      copyToClipboardFallback(shareText, 'คัดลอกข้อมูลรายชื่อสำหรับแชร์แล้ว');
     }
   });
   document.getElementById('closeSheetBtn').addEventListener('click', closeSheet);
@@ -647,7 +705,7 @@ async function submitEdit(no){
   }
 }
 
-/* ---------- toast / vcard ---------- */
+/* ---------- toast / vcard / clipboard ---------- */
 function showToast(msg){
   $toast.textContent = msg;
   $toast.classList.add('show');
@@ -655,20 +713,56 @@ function showToast(msg){
   showToast._t = setTimeout(() => $toast.classList.remove('show'), 2400);
 }
 
+function copyToClipboardFallback(text, successMessage = 'คัดลอกข้อมูลเรียบร้อยแล้ว'){
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast(successMessage);
+    }).catch(() => {
+      showToast('ไม่สามารถคัดลอกข้อมูลได้');
+    });
+  } else {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+      showToast(successMessage);
+    } catch (e) {
+      showToast('ไม่สามารถคัดลอกข้อมูลได้');
+    }
+  }
+}
+
 function saveContact(p){
-  const fullName = escapeVCard(p.rank + p.name);
+  const isLineBrowser = /Line\//i.test(navigator.userAgent);
+  const nickStr = (p.nick && p.nick !== '-') ? ` ("${p.nick}")` : '';
+  const fullName = `${p.rank}${p.name}${nickStr}`;
+  const formattedPhone = formatPhone(p.phone) || p.phone || '-';
+  const textInfo = `ลำดับที่ ${p.no} ${fullName}\nตำแหน่ง: ${p.pos}\nหน่วย: ${p.unit}\nรุ่นอบรม: ${p.batch}\nเบอร์โทร: ${formattedPhone}\nเกิด: ${p.birth} (อายุ ${p.age} ปี)`;
+
+  if (isLineBrowser) {
+    copyToClipboardFallback(textInfo, 'คัดลอกข้อมูลติดต่อแล้ว (สำหรับวางใน LINE / สมุดโทรศัพท์)');
+    return;
+  }
+
+  const vcardName = escapeVCard(p.rank + p.name);
   const nameParts = String(p.name || '').split(' ').reverse().map(escapeVCard);
   const nick = escapeVCard(p.nick);
   const vcard = [
     'BEGIN:VCARD',
     'VERSION:3.0',
     `N:${nameParts.join(';')};;;`,
-    `FN:${fullName}${nick && nick !== '-' ? ' ("' + nick + '")' : ''}`,
+    `FN:${vcardName}${nick && nick !== '-' ? ' ("' + nick + '")' : ''}`,
     `TITLE:${escapeVCard(p.pos)}`,
     `TEL;TYPE=CELL:${safeTelephone(p.phone)}`,
     `NOTE:หลักสูตรสารวัตร รุ่นที่ 268 ลำดับที่ ${Number(p.no) || ''} · หน่วย ${escapeVCard(p.unit)} · ${escapeVCard(p.batch)} · เกิด ${escapeVCard(p.birth)}`,
     'END:VCARD'
   ].join('\r\n');
+
   try{
     const blob = new Blob([vcard], {type:'text/vcard'});
     const url = URL.createObjectURL(blob);
@@ -682,7 +776,7 @@ function saveContact(p){
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     showToast('บันทึกรายชื่อผู้ติดต่อแล้ว');
   }catch(e){
-    showToast('ไม่สามารถบันทึกได้ในขณะนี้');
+    copyToClipboardFallback(textInfo, 'คัดลอกข้อมูลติดต่อเรียบร้อยแล้ว');
   }
 }
 
@@ -930,8 +1024,12 @@ $adminMenuBtn.addEventListener('click', openAdminMenu);
   const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
   if(dismissed || isStandalone){ $hint.style.display = 'none'; }
 
+  const isLineBrowser = /Line\//i.test(navigator.userAgent);
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  if(isIOS){
+
+  if(isLineBrowser){
+    renderSafeHtml($hintText, '<b>เปิดใน LINE:</b> ใช้งานค้นหา ดูรูป และเบอร์โทรได้ทันทีในแอป');
+  }else if(isIOS){
     renderSafeHtml($hintText, '<b>ติดตั้งเป็นแอป:</b> แตะแถบนี้เพื่อดูวิธีติดตั้งบน iPhone');
   }
 
@@ -939,11 +1037,17 @@ $adminMenuBtn.addEventListener('click', openAdminMenu);
     event.preventDefault();
     deferredInstallPrompt = event;
     $hint.style.display = 'flex';
-    renderSafeHtml($hintText, '<b>ติดตั้งเป็นแอป:</b> แตะแถบนี้เพื่อติดตั้งลงในโทรศัพท์');
+    if(!isLineBrowser){
+      renderSafeHtml($hintText, '<b>ติดตั้งเป็นแอป:</b> แตะแถบนี้เพื่อติดตั้งลงในโทรศัพท์');
+    }
   });
 
   async function installApp(){
     if(isStandalone) return;
+    if(isLineBrowser){
+      alert('คุณกำลังเปิดใช้งานผ่าน LINE In-App Browser\n\n- สามารถค้นหา ดูรูปภาพ โทรออก และแชร์ข้อมูลได้ทันทีโดยไม่ต้องสลับหน้า\n- หากต้องการบุ๊กมาร์ก: แตะเมนู (...) มุมขวาบนใน LINE แล้วเลือก "คัดลอกลิงก์" หรือ "เปิดด้วยเบราว์เซอร์อื่น"');
+      return;
+    }
     if(deferredInstallPrompt){
       $hint.classList.add('installing');
       deferredInstallPrompt.prompt();
