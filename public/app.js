@@ -8,24 +8,26 @@ import {
 
 function getPhotoSrc(t) {
   if (!t) return '';
-  if (t.startsWith('/')) {
-    if (t.startsWith('/photos/')
-      || t.startsWith('/photos-ai/')
-      || t.startsWith('/data/photo/')) {
-      const separator = t.includes('?') ? '&' : '?';
-      return safePhotoUrl(`${t}${separator}v=20260725-ai-blur`);
-    }
-    return safePhotoUrl(t);
+  const candidate = String(t).trim();
+  if (candidate.startsWith('data:image/')) {
+    return safePhotoUrl(candidate);
   }
-  const dataUrl = t.startsWith('data:image/') ? t : `data:image/jpeg;base64,${t}`;
-  return safePhotoUrl(dataUrl);
+  if (candidate.includes('photos/') || candidate.includes('data/photo/')) {
+    const separator = candidate.includes('?') ? '&' : '?';
+    return safePhotoUrl(`${candidate}${separator}v=20260725-ai-blur`);
+  }
+  if (!candidate.startsWith('/') && !candidate.includes('/')) {
+    const dataUrl = `data:image/jpeg;base64,${candidate}`;
+    return safePhotoUrl(dataUrl);
+  }
+  return safePhotoUrl(candidate);
 }
 
 function getPersonPhotoSrc(p, thumbnail = false) {
   const photo = p && p.t ? String(p.t) : '';
   const isCustomPhoto = photo.startsWith('data:image/')
-    || photo.startsWith('/photos/edited_')
-    || photo.startsWith('/photos/person_');
+    || photo.includes('photos/edited_')
+    || photo.includes('photos/person_');
   if (isCustomPhoto) {
     return getPhotoSrc(photo);
   }
@@ -34,8 +36,8 @@ function getPersonPhotoSrc(p, thumbnail = false) {
   if (Number.isInteger(no) && no >= 1 && no <= 154) {
     const paddedNo = String(no).padStart(3, '0');
     return getPhotoSrc(thumbnail
-      ? `/photos/thumbs/${paddedNo}.webp`
-      : `/photos/${paddedNo}.png`);
+      ? `photos/thumbs/${paddedNo}.webp`
+      : `photos/${paddedNo}.png`);
   }
   return getPhotoSrc(photo);
 }
@@ -45,8 +47,8 @@ function getNumberedPhotoSrc(p, thumbnail = false) {
   if (!Number.isInteger(no) || no < 1 || no > 154) return '';
   const paddedNo = String(no).padStart(3, '0');
   return getPhotoSrc(thumbnail
-    ? `/photos/thumbs/${paddedNo}.webp`
-    : `/photos/${paddedNo}.png`);
+    ? `photos/thumbs/${paddedNo}.webp`
+    : `photos/${paddedNo}.png`);
 }
 
 let PEOPLE_BASE = [];

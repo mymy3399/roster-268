@@ -17,9 +17,13 @@ export function escapeHtml(value) {
 }
 
 export function safePhotoUrl(value) {
-  const candidate = String(value || '').trim();
+  let candidate = String(value || '').trim();
   if (!candidate) return '';
   if (DATA_IMAGE_PATTERN.test(candidate)) return candidate;
+
+  if (candidate.startsWith('/') && !candidate.startsWith('//')) {
+    candidate = candidate.slice(1);
+  }
 
   try {
     const url = new URL(candidate, window.location.href);

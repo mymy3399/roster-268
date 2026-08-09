@@ -37,9 +37,9 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
-  const isPortrait = url.pathname.startsWith('/data/photo/')
-    || url.pathname.startsWith('/photos-ai/')
-    || url.pathname.startsWith('/photos/');
+  const isPortrait = url.pathname.includes('/data/photo/')
+    || url.pathname.includes('/photos-ai/')
+    || url.pathname.includes('/photos/');
   if (isPortrait) {
     event.respondWith(
       caches.open(CACHE_NAME).then(async (cache) => {
