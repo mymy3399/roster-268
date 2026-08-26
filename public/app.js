@@ -1,6 +1,7 @@
 import {
   escapeHtml,
   escapeVCard,
+  formatExternalUrl,
   renderSafeHtml,
   safePhotoUrl,
   safeTelephone
@@ -128,10 +129,13 @@ const $photoInput = document.getElementById('photoInput');
 document.addEventListener('error', (event) => {
   const image = event.target;
   if (!(image instanceof HTMLImageElement) || !image.dataset.fallbackSrc) return;
-  const fallbackUrl = new URL(image.dataset.fallbackSrc, location.href).href;
-  if (image.src === fallbackUrl) return;
-  image.src = image.dataset.fallbackSrc;
-  if (image.dataset.fallbackFullSrc) image.dataset.fullSrc = image.dataset.fallbackFullSrc;
+  const fallbackSrc = image.dataset.fallbackSrc;
+  delete image.dataset.fallbackSrc;
+  image.src = fallbackSrc;
+  if (image.dataset.fallbackFullSrc) {
+    image.dataset.fullSrc = image.dataset.fallbackFullSrc;
+    delete image.dataset.fallbackFullSrc;
+  }
 }, true);
 
 function highlight(text, q){
@@ -226,11 +230,15 @@ function render(){
     renderSafeHtml($countLine, filteredView
       ? `<div class="filter-summary"><span>พบ ${filtered.length} รายชื่อ</span><button class="reset-filters" id="resultResetBtn" type="button">ล้างตัวกรอง</button></div>`
       : `รายชื่อทั้งหมด ${filtered.length} นาย`);
-    renderSafeHtml($list, filtered.map(p => cardHtml(p, q)).join(''));
+    $list.innerHTML = filtered.map(p => cardHtml(p, q)).join('');
   }
 }
 
-$search.addEventListener('input', render);
+let searchAnimationFrame = null;
+$search.addEventListener('input', () => {
+  if (searchAnimationFrame) cancelAnimationFrame(searchAnimationFrame);
+  searchAnimationFrame = requestAnimationFrame(render);
+});
 $clear.addEventListener('click', () => { $search.value=''; render(); $search.focus(); });
 function resetDiscovery(){
   $search.value = '';
@@ -390,29 +398,41 @@ async function renderLinksModal() {
       return;
     }
 
-    const html = links.map(link => `
-      <a class="link-card-item" href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">
-        <div class="link-info">
-          <div class="link-title">${escapeHtml(link.title)}</div>
-          ${link.description ? `<div class="link-desc">${escapeHtml(link.description)}</div>` : ''}
-          <div class="link-url-text">${escapeHtml(link.url)}</div>
-        </div>
-        <div class="link-open-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-          </svg>
-        </div>
-      </a>
-    `).join('');
+    const html = links.map(link => {
+      const formattedUrl = formatExternalUrl(link.url);
+      return `
+        <a class="link-card-item" href="${escapeHtml(formattedUrl)}" data-url="${escapeHtml(formattedUrl)}" target="_blank" rel="noopener noreferrer">
+          <div class="link-info">
+            <div class="link-title">${escapeHtml(link.title)}</div>
+            ${link.description ? `<div class="link-desc">${escapeHtml(link.description)}</div>` : ''}
+            <div class="link-url-text">${escapeHtml(formattedUrl)}</div>
+          </div>
+          <div class="link-open-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+          </div>
+        </a>
+      `;
+    }).join('');
 
     renderSafeHtml($linksModalBody, html);
 
     $linksModalBody.querySelectorAll('.link-card-item').forEach(card => {
       card.addEventListener('click', (e) => {
-        e.preventDefault();
-        const url = card.getAttribute('href');
-        if (url) {
-          window.open(url, '_blank', 'noopener,noreferrer');
+        const rawUrl = card.dataset.url || card.getAttribute('href');
+        if (!rawUrl) return;
+        const url = formatExternalUrl(rawUrl);
+
+        const isMobile = /iphone|ipad|ipod|android/i.test(navigator.userAgent);
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+
+        if (isMobile || isStandalone) {
+          e.preventDefault();
+          const win = window.open(url, '_blank', 'noopener,noreferrer');
+          if (!win || win.closed || typeof win.closed === 'undefined') {
+            window.location.href = url;
+          }
         }
       });
     });

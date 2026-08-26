@@ -1,11 +1,12 @@
-const CACHE_NAME = 'directory268-v47';
+const CACHE_NAME = 'directory268-v54';
 const APP_SHELL = [
   './',
-  'app.js?v=47',
+  'app.js?v=54',
   'js/security.js',
   'js/search.mjs',
   'js/birthday.mjs',
-  'styles.css?v=47',
+  'styles.css?v=54',
+  'data/people.json',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png'
@@ -55,16 +56,18 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Fast Cache-First with Background Revalidation for App Shell assets (0ms startup)
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (response.ok) {
-          const copy = response.clone();
+    caches.match(event.request).then((cached) => {
+      const fetchPromise = fetch(event.request).then((networkResponse) => {
+        if (networkResponse.ok) {
+          const copy = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         }
-        return response;
-      })
-      .catch(() => caches.match(event.request)
-        .then((cached) => cached || (event.request.mode === 'navigate' ? caches.match('/') : undefined)))
+        return networkResponse;
+      }).catch(() => undefined);
+
+      return cached || fetchPromise || (event.request.mode === 'navigate' ? caches.match('/') : undefined);
+    })
   );
 });

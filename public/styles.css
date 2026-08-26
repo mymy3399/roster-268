@@ -818,6 +818,7 @@ body .mono,body .count,body .filter-count,body .phone-v{
   transition:background .15s ease, border-color .15s ease, transform .15s ease;
   cursor:pointer;
 }
+.link-card-item *{pointer-events:none;}
 .link-card-item:hover{
   border-color:rgba(201,164,92,.4);background:rgba(255,255,255,.06);transform:translateY(-1px);
 }

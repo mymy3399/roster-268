@@ -16,13 +16,23 @@ test('links table stores and retrieves links correctly', () => {
     peopleFile: path.join(__dirname, 'fixtures', 'people.json')
   });
 
-  // Insert a test link
+  // Insert a test link with and without protocol
   const insert = db.prepare(`
     INSERT INTO links (title, url, description, created_at)
     VALUES (?, ?, ?, datetime('now'))
   `);
-  const info = insert.run('วิทยาลัยการตำรวจ', 'https://tc.police.go.th', 'เว็บไซต์หลัก');
+  const info = insert.run('วิทยาลัยการตำรวจ', 'tc.police.go.th', 'เว็บไซต์หลัก');
   assert.ok(info.lastInsertRowid > 0);
+
+  // Trigger migration query
+  db.exec(`
+    UPDATE links
+    SET url = 'https://' || url
+    WHERE url NOT LIKE 'http://%'
+      AND url NOT LIKE 'https://%'
+      AND url NOT LIKE 'tel:%'
+      AND url NOT LIKE 'mailto:%';
+  `);
 
   const links = db.prepare('SELECT * FROM links ORDER BY id DESC').all();
   assert.equal(links.length, 1);

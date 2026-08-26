@@ -559,7 +559,7 @@ app.post('/api/admin/links', adminAuth.requireAdmin, (req, res) => {
 
     if (!title) return res.status(400).json({ error: 'กรุณาระบุชื่อลิงก์' });
     if (!url) return res.status(400).json({ error: 'กรุณาระบุ URL ลิงก์' });
-    if (!/^https?:\/\//i.test(url)) {
+    if (!/^(?:https?|tel|mailto):/i.test(url)) {
       url = 'https://' + url;
     }
 

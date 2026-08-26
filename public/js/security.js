@@ -16,6 +16,15 @@ export function escapeHtml(value) {
   );
 }
 
+export function formatExternalUrl(value) {
+  let url = String(value || '').trim();
+  if (!url) return '';
+  if (!/^(?:https?|tel|mailto):/i.test(url)) {
+    url = 'https://' + url;
+  }
+  return url;
+}
+
 export function safePhotoUrl(value) {
   let candidate = String(value || '').trim();
   if (!candidate) return '';
