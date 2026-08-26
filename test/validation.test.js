@@ -16,13 +16,13 @@ test('sanitizeEditData accepts known fields and trims text', () => {
       name: '  สมชาย ใจดี  ',
       committeeRole: '  เหรัญญิก  ',
       phone: '081-234-5678',
-      age: '35'
+      age: '  35 ปี 4 เดือน  '
     }),
     {
       name: 'สมชาย ใจดี',
       committeeRole: 'เหรัญญิก',
       phone: '081-234-5678',
-      age: '35'
+      age: '35 ปี 4 เดือน'
     }
   );
 });

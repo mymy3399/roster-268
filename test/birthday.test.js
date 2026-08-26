@@ -9,7 +9,7 @@ test('birthday module parses Thai date strings correctly', async () => {
   const moduleUrl = pathToFileURL(
     path.join(__dirname, '..', 'public', 'js', 'birthday.mjs')
   ).href;
-  const { parseBirthDate, isToday, isThisMonth, isUpcoming, getBirthdaysToday, getBirthdaysThisMonth, getBirthdaysUpcoming } = await import(moduleUrl);
+  const { parseBirthDate, isToday, isThisMonth, isUpcoming, getBirthdaysToday, getBirthdaysThisMonth, getBirthdaysUpcoming, getCurrentAge } = await import(moduleUrl);
 
   // Test parseBirthDate
   assert.deepEqual(parseBirthDate('10 พ.ค. 1996'), { day: 10, month: 5, year: 1996 });
@@ -19,6 +19,17 @@ test('birthday module parses Thai date strings correctly', async () => {
 
   // Test date matching with fixed reference date (e.g. May 10, 2026)
   const refDate = new Date(2026, 4, 10); // Month index 4 is May (May 10)
+
+  // Test getCurrentAge
+  // Born 10 May 1996 on May 10 2026 -> Exactly 30 years 0 months
+  assert.equal(getCurrentAge('10 พ.ค. 1996', null, refDate), '30 ปี');
+  // Born 3 April 1991 on May 10 2026 -> 35 years 1 month
+  assert.equal(getCurrentAge('3 เม.ย. 1991', null, refDate), '35 ปี 1 เดือน');
+  // Born 30 Nov 2539 (1996 CE) on May 10 2026 -> 29 years 5 months
+  assert.equal(getCurrentAge('30 พ.ย.2539', null, refDate), '29 ปี 5 เดือน');
+  // Fallback age when invalid date
+  assert.equal(getCurrentAge('invalid date', '40', refDate), '40');
+  assert.equal(getCurrentAge('', null, refDate), '-');
 
   assert.equal(isToday('10 พ.ค. 1996', refDate), true);
   assert.equal(isToday('11 พ.ค. 1996', refDate), false);

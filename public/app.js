@@ -13,7 +13,9 @@ import {
   getBirthdaysToday,
   getBirthdaysUpcoming,
   getCountdownToGraduation,
-  isToday
+  getCurrentAge,
+  isToday,
+  parseBirthDate
 } from './js/birthday.mjs';
 
 function getPhotoSrc(t) {
@@ -97,7 +99,9 @@ function setEdits(obj){
 function mergedPerson(no){
   const base = PEOPLE_BASE.find(p => p.no === no);
   const edits = getEdits();
-  return { ...base, ...(edits[no] || {}) };
+  const merged = { ...base, ...(edits[no] || {}) };
+  merged.age = getCurrentAge(merged.birth, merged.age);
+  return merged;
 }
 function isEdited(no){
   const edits = getEdits();
@@ -155,6 +159,12 @@ function batchCategory(p){
   return 'other';
 }
 
+function getBirthTimestamp(p) {
+  const parsed = parseBirthDate(p.birth);
+  if (!parsed) return Infinity;
+  return Date.UTC(parsed.year, parsed.month - 1, parsed.day);
+}
+
 let activeFilter = 'all';
 
 function formatPhone(p){
@@ -162,7 +172,7 @@ function formatPhone(p){
   return p;
 }
 
-function cardHtml(p, q){
+function cardHtml(p, q, seniorityRank){
   const edited = isEdited(p.no);
   return `
   <div class="card" data-no="${p.no}" role="button" tabindex="0" aria-label="เปิดข้อมูล ${escapeHtml(p.rank)} ${escapeHtml(p.name)} ลำดับที่ ${p.no}">
@@ -185,8 +195,8 @@ function cardHtml(p, q){
     </div>
     <div class="card-side">
       <span class="no-badge mono">#${p.no}</span>
-      <span class="phone mono">${highlight(formatPhone(p.phone), q)}</span>
-      <span class="age">อายุ ${escapeHtml(p.age || '-')} ปี</span>
+      ${seniorityRank ? `<span class="seniority-rank">อาวุโสที่ ${seniorityRank}</span>` : `<span class="phone mono">${highlight(formatPhone(p.phone), q)}</span>`}
+      <span class="age">อายุ ${escapeHtml(p.age || '-')}</span>
     </div>
   </div>`;
 }
@@ -210,16 +220,38 @@ function render(){
     const selected = button.dataset.filter === activeFilter;
     button.classList.toggle('active', selected);
     button.setAttribute('aria-pressed', String(selected));
-    button.querySelector('.filter-count').textContent = categoryCounts[button.dataset.filter] || 0;
+    const countEl = button.querySelector('.filter-count');
+    if (countEl) {
+      if (button.dataset.filter === 'seniority') {
+        countEl.textContent = '';
+      } else {
+        countEl.textContent = categoryCounts[button.dataset.filter] || 0;
+      }
+    }
   });
+
+  // Build seniority rank map (across all 154 people, regardless of filter)
+  let seniorityRankMap = {};
+  if (activeFilter === 'seniority') {
+    const sortedAll = [...all].sort((a, b) => getBirthTimestamp(a) - getBirthTimestamp(b) || a.no - b.no);
+    sortedAll.forEach((p, i) => { seniorityRankMap[p.no] = i + 1; });
+  }
+
   const filtered = all.filter(p =>
     matches(p, q) && (
       activeFilter === 'all' ||
+      activeFilter === 'seniority' ||
       (activeFilter === 'additional-role'
         ? Boolean(String(p.committeeRole || '').trim())
         : batchCategory(p) === activeFilter)
     )
   );
+
+  // Sort filtered list by seniority when in seniority mode
+  if (activeFilter === 'seniority') {
+    filtered.sort((a, b) => getBirthTimestamp(a) - getBirthTimestamp(b) || a.no - b.no);
+  }
+
   if(filtered.length === 0){
     $list.replaceChildren();
     $empty.style.display = 'flex';
@@ -230,7 +262,7 @@ function render(){
     renderSafeHtml($countLine, filteredView
       ? `<div class="filter-summary"><span>พบ ${filtered.length} รายชื่อ</span><button class="reset-filters" id="resultResetBtn" type="button">ล้างตัวกรอง</button></div>`
       : `รายชื่อทั้งหมด ${filtered.length} นาย`);
-    $list.innerHTML = filtered.map(p => cardHtml(p, q)).join('');
+    $list.innerHTML = filtered.map(p => cardHtml(p, q, seniorityRankMap[p.no])).join('');
   }
 }
 
@@ -690,7 +722,7 @@ function openPersonSheet(no){
       <div class="drow"><div class="k">หน่วย</div><div class="v">${escapeHtml(p.unit)}</div></div>
       <div class="drow"><div class="k">รุ่นอบรม</div><div class="v">${escapeHtml(p.batch)}</div></div>
       <div class="drow"><div class="k">วันเกิด</div><div class="v">${escapeHtml(p.birth)}</div></div>
-      <div class="drow"><div class="k">อายุ</div><div class="v">${escapeHtml(p.age)} ปี</div></div>
+      <div class="drow"><div class="k">อายุ</div><div class="v">${escapeHtml(p.age)}</div></div>
       <div class="drow"><div class="k">เบอร์โทร</div><div class="v phone-v">${escapeHtml(formatPhone(p.phone))}</div></div>
     </div>
     <div class="actions">
@@ -815,7 +847,7 @@ async function openEditSheet(no){
     </div>
     <div class="field-row">
       <div class="field"><label>วันเกิด</label><input id="f_birth" value="${escapeHtml(p.birth)}"></div>
-      <div class="field"><label>อายุ</label><input id="f_age" value="${escapeHtml(p.age)}" inputmode="numeric"></div>
+      <div class="field"><label>อายุ (คำนวณอัตโนมัติ)</label><input id="f_age" value="${escapeHtml(p.age)}" readonly disabled style="opacity:.85;cursor:not-allowed;background:var(--surface);"></div>
     </div>
     <div class="form-note">ตรวจสอบข้อมูลก่อนส่ง คำขอจะมีผลเมื่อผู้ดูแลอนุมัติแล้ว</div>
     ${edited ? `<button class="revert-link" id="revertBtn">คืนค่าเดิม (ยกเลิกการแก้ไขทั้งหมดของคนนี้)</button>` : ''}
@@ -828,6 +860,17 @@ async function openEditSheet(no){
   document.getElementById('cancelEditBtn').addEventListener('click', () => openPersonSheet(no));
   document.getElementById('saveEditBtn').addEventListener('click', () => submitEdit(no));
   document.getElementById('editPhotoBtn').addEventListener('click', () => $photoInput.click());
+
+  const fBirth = document.getElementById('f_birth');
+  const fAge = document.getElementById('f_age');
+  if (fBirth && fAge) {
+    fBirth.addEventListener('input', () => {
+      const calculated = getCurrentAge(fBirth.value.trim());
+      if (calculated && calculated !== '-') {
+        fAge.value = calculated;
+      }
+    });
+  }
   const revertBtn = document.getElementById('revertBtn');
   if(revertBtn) revertBtn.addEventListener('click', async () => {
     if(!confirm('คืนข้อมูลและรูปของบุคคลนี้กลับเป็นค่าต้นฉบับใช่หรือไม่?')) return;

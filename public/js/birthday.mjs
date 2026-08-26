@@ -110,6 +110,40 @@ export function calculateAgeTurning(birthStr, now = new Date()) {
 }
 
 /**
+ * Calculate current exact age in years and months based on birth date string and reference date.
+ * Returns formatted string like "30 ปี 3 เดือน" or "36 ปี".
+ */
+export function getCurrentAge(birthStr, fallbackAge = null, now = new Date()) {
+  const parsed = parseBirthDate(birthStr);
+  if (!parsed) return fallbackAge ? String(fallbackAge) : '-';
+
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1; // 1-12
+  const currentDay = now.getDate();
+
+  let years = currentYear - parsed.year;
+  let months = currentMonth - parsed.month;
+  let days = currentDay - parsed.day;
+
+  if (days < 0) {
+    months -= 1;
+  }
+
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  years = Math.max(0, years);
+  months = Math.max(0, months);
+
+  if (months > 0) {
+    return `${years} ปี ${months} เดือน`;
+  }
+  return `${years} ปี`;
+}
+
+/**
  * Get list of people with birthdays today.
  */
 export function getBirthdaysToday(people, now = new Date()) {
