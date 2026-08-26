@@ -1,9 +1,11 @@
-const CACHE_NAME = 'directory268-v37';
+const CACHE_NAME = 'directory268-v47';
 const APP_SHELL = [
   './',
-  'app.js',
+  'app.js?v=47',
   'js/security.js',
-  'styles.css',
+  'js/search.mjs',
+  'js/birthday.mjs',
+  'styles.css?v=47',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png'

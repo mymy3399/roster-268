@@ -539,6 +539,58 @@ app.post('/api/people', requireAdmin, (req, res) => {
   }
 });
 
+/* ---------- Links endpoints ---------- */
+app.get('/api/links', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT id, title, url, description, created_at FROM links ORDER BY id DESC').all();
+    res.json(rows);
+  } catch (e) {
+    console.error('Error fetching links:', e);
+    res.status(500).json({ error: 'Failed to fetch links' });
+  }
+});
+
+app.post('/api/admin/links', adminAuth.requireAdmin, (req, res) => {
+  try {
+    let { title, url, description } = req.body || {};
+    title = String(title || '').trim();
+    url = String(url || '').trim();
+    description = String(description || '').trim();
+
+    if (!title) return res.status(400).json({ error: 'กรุณาระบุชื่อลิงก์' });
+    if (!url) return res.status(400).json({ error: 'กรุณาระบุ URL ลิงก์' });
+    if (!/^https?:\/\//i.test(url)) {
+      url = 'https://' + url;
+    }
+
+    const result = db.prepare(`
+      INSERT INTO links (title, url, description, created_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(title, url, description);
+
+    res.status(201).json({ success: true, id: result.lastInsertRowid, title, url, description });
+  } catch (e) {
+    console.error('Error creating link:', e);
+    res.status(500).json({ error: 'Failed to create link' });
+  }
+});
+
+app.delete('/api/admin/links/:id', adminAuth.requireAdmin, (req, res) => {
+  try {
+    const id = parsePositiveInteger(req.params.id);
+    if (!id) return res.status(400).json({ error: 'ID ไม่ถูกต้อง' });
+
+    const info = db.prepare('DELETE FROM links WHERE id = ?').run(id);
+    if (info.changes === 0) {
+      return res.status(404).json({ error: 'ไม่พบลิงก์ที่ต้องการลบ' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Error deleting link:', e);
+    res.status(500).json({ error: 'Failed to delete link' });
+  }
+});
+
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   if (error.type === 'entity.too.large') {

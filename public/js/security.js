@@ -55,7 +55,7 @@ function isSafeMarkupUrl(attribute, value) {
   if (candidate.startsWith('#')) return true;
   try {
     const url = new URL(candidate, window.location.origin);
-    return url.origin === window.location.origin && ['http:', 'https:'].includes(url.protocol);
+    return ['http:', 'https:', 'tel:', 'mailto:'].includes(url.protocol);
   } catch (error) {
     return false;
   }

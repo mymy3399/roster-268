@@ -5,6 +5,15 @@ import {
   safePhotoUrl,
   safeTelephone
 } from './js/security.js';
+import { matches, norm } from './js/search.mjs';
+import {
+  calculateAgeTurning,
+  getBirthdaysThisMonth,
+  getBirthdaysToday,
+  getBirthdaysUpcoming,
+  getCountdownToGraduation,
+  isToday
+} from './js/birthday.mjs';
 
 function getPhotoSrc(t) {
   if (!t) return '';
@@ -125,8 +134,6 @@ document.addEventListener('error', (event) => {
   if (image.dataset.fallbackFullSrc) image.dataset.fullSrc = image.dataset.fallbackFullSrc;
 }, true);
 
-function norm(s){ return (s||'').toLowerCase(); }
-
 function highlight(text, q){
   const safe = escapeHtml(text);
   if(!q) return safe;
@@ -134,12 +141,6 @@ function highlight(text, q){
     const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + ')', 'ig');
     return safe.replace(re, '<mark>$1</mark>');
   }catch(e){ return safe; }
-}
-
-function matches(p, q){
-  if(!q) return true;
-  const hay = norm([p.no, p.name, p.pos, p.committeeRole].join(' '));
-  return hay.includes(q);
 }
 
 function batchCategory(p){
@@ -181,6 +182,7 @@ function cardHtml(p, q){
     <div class="card-side">
       <span class="no-badge mono">#${p.no}</span>
       <span class="phone mono">${highlight(formatPhone(p.phone), q)}</span>
+      <span class="age">อายุ ${escapeHtml(p.age || '-')} ปี</span>
     </div>
   </div>`;
 }
@@ -188,10 +190,13 @@ function cardHtml(p, q){
 function render(){
   $loadingState.hidden = true;
   $errorState.hidden = true;
+  updateBirthdayBadge();
+  updateCountdownBar();
   const q = norm($search.value.trim());
   $clear.classList.toggle('show', q.length > 0);
   const all = allMerged();
-  document.getElementById('countBadge').textContent = `${all.length} นาย`;
+  const $countBadge = document.getElementById('countBadge');
+  if ($countBadge) $countBadge.textContent = `${all.length} นาย`;
   const categoryCounts = { all: all.length, 'กอน': 0, 'กอส': 0, 'นรต': 0, other: 0, 'additional-role': 0 };
   all.forEach(p => {
     categoryCounts[batchCategory(p)]++;
@@ -303,18 +308,287 @@ function openSheetRaw(html){
 }
 
 function closeSheet(){
-  $backdrop.classList.remove('show');
   $sheet.classList.remove('show');
-  document.body.style.overflow = '';
+  if (!$birthdayModal.classList.contains('open') && !$photoViewer.classList.contains('show')) {
+    $backdrop.classList.remove('show');
+    document.body.style.overflow = '';
+  }
   if(lastFocusedElement && document.contains(lastFocusedElement)) lastFocusedElement.focus();
   lastFocusedElement = null;
 
-  if(isModalHistoryPushed && !$photoViewer.classList.contains('show')){
+  if(isModalHistoryPushed && !$birthdayModal.classList.contains('open') && !$photoViewer.classList.contains('show')){
     isModalHistoryPushed = false;
     try{ if(history.state && history.state.modalOpen) history.back(); }catch(e){}
   }
 }
-$backdrop.addEventListener('click', closeSheet);
+$backdrop.addEventListener('click', () => {
+  if ($sheet.classList.contains('show')) {
+    closeSheet();
+  } else if ($linksModal && $linksModal.classList.contains('open')) {
+    closeLinksModal();
+  } else if ($birthdayModal.classList.contains('open')) {
+    closeBirthdayModal();
+  }
+});
+
+/* ---------- links modal & management ---------- */
+const $linksBtn = document.getElementById('linksBtn');
+const $linksModal = document.getElementById('linksModal');
+const $linksModalClose = document.getElementById('linksModalClose');
+const $linksModalBody = document.getElementById('linksModalBody');
+
+async function openLinksModal() {
+  lastFocusedElement = document.activeElement;
+  await renderLinksModal();
+  $backdrop.classList.add('show');
+  if ($linksModal) $linksModal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  if (!isModalHistoryPushed) {
+    try { history.pushState({ modalOpen: true }, ''); } catch (e) {}
+    isModalHistoryPushed = true;
+  }
+}
+
+function closeLinksModal() {
+  if ($linksModal) $linksModal.classList.remove('open');
+  if (!$sheet.classList.contains('show') && !$birthdayModal.classList.contains('open')) {
+    $backdrop.classList.remove('show');
+    document.body.style.overflow = '';
+  }
+  if (lastFocusedElement && document.contains(lastFocusedElement)) {
+    lastFocusedElement.focus();
+  }
+  lastFocusedElement = null;
+
+  if (isModalHistoryPushed && !$sheet.classList.contains('show') && !$birthdayModal.classList.contains('open') && !$photoViewer.classList.contains('show')) {
+    isModalHistoryPushed = false;
+    try { if (history.state && history.state.modalOpen) history.back(); } catch (e) {}
+  }
+}
+
+async function renderLinksModal() {
+  if (!$linksModalBody) return;
+  renderSafeHtml($linksModalBody, `
+    <div class="state-panel">
+      <div class="spinner" aria-hidden="true"></div>
+      <div class="state-title">กำลังโหลดลิงก์</div>
+    </div>
+  `);
+  try {
+    const res = await fetch('/api/links', { cache: 'no-store' });
+    if (!res.ok) throw new Error('Fetch failed');
+    const links = await res.json();
+
+    if (!Array.isArray(links) || links.length === 0) {
+      renderSafeHtml($linksModalBody, `
+        <div class="birthday-empty">
+          ยังไม่มีลิงก์ย่อยในระบบ<br>
+          <span style="font-size:12px;color:var(--muted);">ผู้ดูแลสามารถเพิ่มลิงก์ได้ที่เมนูผู้ดูแล</span>
+        </div>
+      `);
+      return;
+    }
+
+    const html = links.map(link => `
+      <a class="link-card-item" href="${escapeHtml(link.url)}" target="_blank" rel="noopener noreferrer">
+        <div class="link-info">
+          <div class="link-title">${escapeHtml(link.title)}</div>
+          ${link.description ? `<div class="link-desc">${escapeHtml(link.description)}</div>` : ''}
+          <div class="link-url-text">${escapeHtml(link.url)}</div>
+        </div>
+        <div class="link-open-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+          </svg>
+        </div>
+      </a>
+    `).join('');
+
+    renderSafeHtml($linksModalBody, html);
+
+    $linksModalBody.querySelectorAll('.link-card-item').forEach(card => {
+      card.addEventListener('click', (e) => {
+        e.preventDefault();
+        const url = card.getAttribute('href');
+        if (url) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
+      });
+    });
+  } catch (e) {
+    renderSafeHtml($linksModalBody, `
+      <div class="birthday-empty">
+        ไม่สามารถโหลดลิงก์ได้ กรุณาลองใหม่อีกครั้ง
+      </div>
+    `);
+  }
+}
+
+if ($linksBtn) $linksBtn.addEventListener('click', openLinksModal);
+if ($linksModalClose) $linksModalClose.addEventListener('click', closeLinksModal);
+
+/* ---------- birthday modal & system ---------- */
+const $birthdayBtn = document.getElementById('birthdayBtn');
+const $birthdayBadge = document.getElementById('birthdayBadge');
+const $birthdayModal = document.getElementById('birthdayModal');
+const $birthdayModalClose = document.getElementById('birthdayModalClose');
+const $birthdayModalBody = document.getElementById('birthdayModalBody');
+const $tabCountToday = document.getElementById('tabCountToday');
+const $tabCountUpcoming = document.getElementById('tabCountUpcoming');
+const $tabCountMonth = document.getElementById('tabCountMonth');
+
+let activeBirthdayTab = 'today';
+
+function updateBirthdayBadge() {
+  const people = allMerged();
+  const todayList = getBirthdaysToday(people);
+  if (todayList.length > 0) {
+    $birthdayBadge.textContent = todayList.length;
+    $birthdayBadge.classList.add('show');
+  } else {
+    $birthdayBadge.classList.remove('show');
+  }
+}
+
+function updateCountdownBar() {
+  const $countdownBar = document.getElementById('countdownBar');
+  if (!$countdownBar) return;
+  const countdown = getCountdownToGraduation(new Date());
+
+  if (countdown.isToday) {
+    renderSafeHtml($countdownBar, `<span>วันนี้วันจบหลักสูตรสารวัตร รุ่น 268 (18 ก.ย. 2569)</span>`);
+  } else if (countdown.isPassed) {
+    renderSafeHtml($countdownBar, `<span>จบหลักสูตรสารวัตร รุ่น 268 เรียบร้อยแล้ว (18 ก.ย. 2569)</span>`);
+  } else {
+    renderSafeHtml($countdownBar, `<span>เหลืออีก <strong class="count-highlight">${countdown.days}</strong> วัน จะจบหลักสูตรสารวัตร (18 ก.ย. 69)</span>`);
+  }
+}
+
+function openBirthdayModal() {
+  lastFocusedElement = document.activeElement;
+  renderBirthdayModal(activeBirthdayTab);
+  $backdrop.classList.add('show');
+  $birthdayModal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  if (!isModalHistoryPushed) {
+    try { history.pushState({ modalOpen: true }, ''); } catch (e) {}
+    isModalHistoryPushed = true;
+  }
+}
+
+function closeBirthdayModal(skipHistory = false) {
+  $birthdayModal.classList.remove('open');
+  if (!$sheet.classList.contains('show')) {
+    $backdrop.classList.remove('show');
+    document.body.style.overflow = '';
+  }
+  if (lastFocusedElement && document.contains(lastFocusedElement)) {
+    lastFocusedElement.focus();
+  }
+  lastFocusedElement = null;
+
+  if (!skipHistory && isModalHistoryPushed && !$sheet.classList.contains('show') && !$photoViewer.classList.contains('show')) {
+    isModalHistoryPushed = false;
+    try { if (history.state && history.state.modalOpen) history.back(); } catch (e) {}
+  }
+}
+
+function renderBirthdayModal(tab = 'today') {
+  activeBirthdayTab = tab;
+  const people = allMerged();
+  const todayList = getBirthdaysToday(people);
+  const upcomingList = getBirthdaysUpcoming(people, new Date(), 14);
+  const monthList = getBirthdaysThisMonth(people);
+
+  if ($tabCountToday) $tabCountToday.textContent = todayList.length;
+  if ($tabCountUpcoming) $tabCountUpcoming.textContent = upcomingList.length;
+  if ($tabCountMonth) $tabCountMonth.textContent = monthList.length;
+
+  document.querySelectorAll('.birthday-tab').forEach(btn => {
+    const isTarget = btn.dataset.tab === tab;
+    btn.classList.toggle('active', isTarget);
+    btn.setAttribute('aria-selected', isTarget ? 'true' : 'false');
+  });
+
+  let targetList = [];
+  let emptyMsg = '';
+
+  if (tab === 'today') {
+    targetList = todayList;
+    emptyMsg = 'ไม่มีเพื่อนร่วมรุ่นที่มีวันเกิดตรงกับวันนี้';
+  } else if (tab === 'upcoming') {
+    targetList = upcomingList;
+    emptyMsg = 'ไม่มีวันเกิดในอีก 14 วันข้างหน้า';
+  } else {
+    targetList = monthList;
+    emptyMsg = 'ไม่มีเพื่อนร่วมรุ่นที่มีวันเกิดในเดือนนี้';
+  }
+
+  if (targetList.length === 0) {
+    renderSafeHtml($birthdayModalBody, `<div class="birthday-empty">${escapeHtml(emptyMsg)}</div>`);
+    return;
+  }
+
+  const now = new Date();
+  const html = targetList.map(p => {
+    let tag = '';
+    if (tab === 'today') {
+      const turningAge = calculateAgeTurning(p.birth, now);
+      tag = `<div class="birthday-item-tag">เกิดวันนี้${turningAge ? ` (อายุครบ ${turningAge} ปี)` : ''}</div>`;
+    } else if (tab === 'upcoming') {
+      const turningAge = calculateAgeTurning(p.birth, now);
+      tag = `<div class="birthday-item-tag">อีก ${p.daysUntil} วัน (${escapeHtml(p.birth)})${turningAge ? ` (อายุครบ ${turningAge} ปี)` : ''}</div>`;
+    } else {
+      const turningAge = calculateAgeTurning(p.birth, now);
+      const isBirthdayToday = isToday(p.birth, now);
+      tag = `<div class="birthday-item-tag">${isBirthdayToday ? 'วันนี้ ' : ''}(${escapeHtml(p.birth)})${turningAge ? ` (อายุครบ ${turningAge} ปี)` : ''}</div>`;
+    }
+
+    return `
+      <div class="birthday-card-item" data-no="${p.no}" role="button" tabindex="0" aria-label="${escapeHtml(p.rank)}${escapeHtml(p.name)}">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          ${tag}
+        </div>
+        ${cardHtml(p, '')}
+      </div>
+    `;
+  }).join('');
+
+  renderSafeHtml($birthdayModalBody, html);
+
+  $birthdayModalBody.querySelectorAll('.birthday-card-item').forEach(card => {
+    card.addEventListener('click', (e) => {
+      const photo = e.target.closest('.thumb');
+      if (photo) {
+        openPhotoViewer(photo.dataset.fullSrc || photo.src, photo.alt);
+        return;
+      }
+      const no = parseInt(card.dataset.no, 10);
+      openPersonSheet(no);
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        const no = parseInt(card.dataset.no, 10);
+        openPersonSheet(no);
+      }
+    });
+  });
+}
+
+if ($birthdayBtn) {
+  $birthdayBtn.addEventListener('click', openBirthdayModal);
+}
+if ($birthdayModalClose) {
+  $birthdayModalClose.addEventListener('click', closeBirthdayModal);
+}
+document.querySelectorAll('.birthday-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    renderBirthdayModal(btn.dataset.tab);
+  });
+});
 
 /* ---------- full-size photo viewer ---------- */
 function openPhotoViewer(src, alt = ''){
@@ -353,12 +627,16 @@ $photoViewer.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if(e.key === 'Escape' && $photoViewer.classList.contains('show')){
     closePhotoViewer();
+  }else if(e.key === 'Escape' && $birthdayModal.classList.contains('open')){
+    closeBirthdayModal();
   }
 });
 
 window.addEventListener('popstate', () => {
   if($photoViewer.classList.contains('show')){
     closePhotoViewer();
+  }else if($birthdayModal.classList.contains('open')){
+    closeBirthdayModal();
   }else if($sheet.classList.contains('show')){
     closeSheet();
   }
@@ -894,13 +1172,14 @@ async function openAdminMenu(){
   openSheetRaw(`
     <div class="state-panel">
       <div class="spinner" aria-hidden="true"></div>
-      <div class="state-title">กำลังโหลดคำขอแก้ไข</div>
+      <div class="state-title">กำลังโหลดข้อมูลผู้ดูแล</div>
     </div>
   `);
   try{
-    const [res, historyRes] = await Promise.all([
+    const [res, historyRes, linksRes] = await Promise.all([
       fetch('/api/admin/edit-requests', { cache:'no-store' }),
-      fetch('/api/admin/edit-history', { cache:'no-store' })
+      fetch('/api/admin/edit-history', { cache:'no-store' }),
+      fetch('/api/links', { cache:'no-store' })
     ]);
     if(res.status === 401 || historyRes.status === 401){
       closeSheet();
@@ -909,6 +1188,7 @@ async function openAdminMenu(){
     if(!res.ok || !historyRes.ok) throw new Error('load queue failed');
     const requests = await res.json();
     const history = await historyRes.json();
+    const links = linksRes.ok ? await linksRes.json() : [];
     setPendingCount(requests.length);
     const cards = requests.map(request => {
       const changes = Object.entries(request.data).map(([key,value]) => `
@@ -948,14 +1228,35 @@ async function openAdminMenu(){
         </div>
       `;
     }).join('');
+    const adminLinksCards = links.map(link => `
+      <div class="admin-link-item" data-link-id="${link.id}">
+        <div style="overflow:hidden;flex:1;">
+          <div style="font-weight:600;font-size:13.5px;color:var(--ink);">${escapeHtml(link.title)}</div>
+          <div style="font-size:11px;color:var(--accent);font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(link.url)}</div>
+          ${link.description ? `<div style="font-size:11.5px;color:var(--muted);">${escapeHtml(link.description)}</div>` : ''}
+        </div>
+        <button class="reject-btn delete-link-btn" type="button" style="padding:4px 10px;font-size:12px;flex:none;">ลบ</button>
+      </div>
+    `).join('') || '<div class="state-panel"><div class="state-title">ยังไม่มีลิงก์ย่อย</div></div>';
+
     openSheetRaw(`
       <div class="sheet-topbar">
         <button class="icon-btn" id="adminLogoutBtn" aria-label="ออกจากระบบผู้ดูแล" title="ออกจากระบบ">↪</button>
         <button class="icon-btn" id="closeSheetBtn" aria-label="ปิด">×</button>
       </div>
-      <h2 style="font-size:18px;">อนุมัติการแก้ไข</h2>
-      <div style="font-size:13px;color:var(--muted);margin:3px 0 10px;">รออนุมัติ ${requests.length} รายการ</div>
-      <div class="approval-section-title">รายการรออนุมัติ</div>
+      <h2 style="font-size:18px;">เมนูผู้ดูแลระบบ</h2>
+      <div style="font-size:13px;color:var(--muted);margin:3px 0 10px;">คำขอรออนุมัติ ${requests.length} รายการ</div>
+
+      <div class="approval-section-title">จัดการลิงก์สำคัญ / ลิงก์ย่อย</div>
+      <form class="admin-link-form" id="adminAddLinkForm">
+        <input type="text" id="linkTitleInput" placeholder="ชื่อลิงก์ (เช่น เว็บวิทยาลัยการตำรวจ)" required>
+        <input type="url" id="linkUrlInput" placeholder="URL ลิงก์ (เช่น https://tc.police.go.th)" required>
+        <input type="text" id="linkDescInput" placeholder="คำอธิบายย่อย (ระบุหรือไม่ก็ได้)">
+        <button class="approve-btn" type="submit" style="width:100%;">+ เพิ่มลิงก์ใหม่</button>
+      </form>
+      <div id="adminLinksList">${adminLinksCards}</div>
+
+      <div class="approval-section-title">รายการรออนุมัติแก้ไข</div>
       <div id="approvalList">${cards || '<div class="state-panel"><div class="state-title">ไม่มีคำขอที่รออนุมัติ</div></div>'}</div>
       <div class="approval-section-title">ประวัติการแก้ไข</div>
       <div id="approvalHistory">${historyCards || '<div class="state-panel"><div class="state-title">ยังไม่มีประวัติการอนุมัติ</div></div>'}</div>
@@ -966,6 +1267,48 @@ async function openAdminMenu(){
       closeSheet();
       showToast('ออกจากระบบผู้ดูแลแล้ว');
     });
+
+    const addLinkForm = document.getElementById('adminAddLinkForm');
+    if (addLinkForm) {
+      addLinkForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('linkTitleInput').value.trim();
+        const url = document.getElementById('linkUrlInput').value.trim();
+        const description = document.getElementById('linkDescInput').value.trim();
+        if (!title || !url) return;
+
+        const addRes = await fetch('/api/admin/links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, url, description })
+        });
+        if (addRes.ok) {
+          showToast('เพิ่มลิงก์เรียบร้อยแล้ว');
+          openAdminMenu();
+        } else {
+          showToast('ไม่สามารถเพิ่มลิงก์ได้');
+        }
+      });
+    }
+
+    const adminLinksList = document.getElementById('adminLinksList');
+    if (adminLinksList) {
+      adminLinksList.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.delete-link-btn');
+        if (!btn) return;
+        const item = btn.closest('.admin-link-item');
+        if (!item) return;
+        if (!confirm('ต้องการลบลิงก์นี้ใช่หรือไม่?')) return;
+        const delRes = await fetch(`/api/admin/links/${item.dataset.linkId}`, { method: 'DELETE' });
+        if (delRes.ok) {
+          showToast('ลบลิงก์เรียบร้อยแล้ว');
+          openAdminMenu();
+        } else {
+          showToast('ลบลิงก์ไม่สำเร็จ');
+        }
+      });
+    }
+
     document.getElementById('approvalList').addEventListener('click', async (event) => {
       const card = event.target.closest('.approval-card');
       if(!card) return;
@@ -1007,7 +1350,7 @@ async function openAdminMenu(){
   }catch(e){
     renderSafeHtml($sheetBody, `
       <div class="state-panel">
-        <div class="state-title">โหลดคำขอไม่สำเร็จ</div>
+        <div class="state-title">โหลดข้อมูลผู้ดูแลไม่สำเร็จ</div>
         <button class="retry-btn" id="retryAdminBtn">ลองใหม่</button>
       </div>`);
     document.getElementById('retryAdminBtn').addEventListener('click', openAdminMenu);
@@ -1094,7 +1437,9 @@ $adminMenuBtn.addEventListener('click', openAdminMenu);
 if('serviceWorker' in navigator){
   window.addEventListener('load', async () => {
     try{
-      const registration = await navigator.serviceWorker.register('sw.js');
+      const registration = await navigator.serviceWorker.register('sw.js', {
+        updateViaCache: 'none'
+      });
       const $updateBanner = document.getElementById('updateBanner');
       const $updateAppBtn = document.getElementById('updateAppBtn');
       let refreshing = false;
@@ -1120,6 +1465,10 @@ if('serviceWorker' in navigator){
         if(refreshing) return;
         refreshing = true;
         window.location.reload();
+      });
+      registration.update();
+      document.addEventListener('visibilitychange', () => {
+        if(document.visibilityState === 'visible') registration.update();
       });
       setInterval(() => registration.update(), 60 * 60 * 1000);
     }catch(error){
